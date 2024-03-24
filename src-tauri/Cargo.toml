@@ -14,21 +14,18 @@ authors = { workspace = true }
 tauri-build = { workspace = true }
 
 [dependencies]
+launcher-core = { path = "../core" }
 tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-http = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-flate2 = { workspace = true }
-tar = { workspace = true }
-zip = { workspace = true }
-uuid = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
-sha1 = "0.10.6"
+uuid = { workspace = true }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
