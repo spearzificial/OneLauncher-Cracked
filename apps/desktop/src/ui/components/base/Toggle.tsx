@@ -3,7 +3,6 @@ import { type JSX, createSignal, splitProps } from 'solid-js';
 type ToggleProps = JSX.HTMLAttributes<HTMLDivElement> & {
 	defaultChecked?: boolean;
 	onChecked?: (checked: boolean) => void;
-	showText?: 'left' | 'right';
 };
 
 function Toggle(props: ToggleProps) {
