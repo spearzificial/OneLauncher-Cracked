@@ -1,14 +1,17 @@
 {
 	"name": "@onelauncher/core",
-	"version": "0.1.0-alpha.2",
+	"version": "0.2.0-alpha.1",
 	"description": "Next-generation open source Minecraft launcher core",
 	"license": "GPL-3.0-only",
 	"repository": {
 		"type": "git",
 		"url": "git@github.com:polyfrost/onelauncher",
-		"directory": "packages/core"
+		"directory": "packages/core-new"
 	},
 	"bugs": "https://github.com/polyfrost/onelauncher/issues",
 	"sideEffects": false,
-	"scripts": {}
+	"scripts": {
+		"cargo": "cargo",
+		"binary": "cargo run --bin"
+	}
 }
