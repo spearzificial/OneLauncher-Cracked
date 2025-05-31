@@ -71,6 +71,56 @@ export const commands = {
 			else return { status: 'error', error: e as any };
 		}
 	},
+	async createCluster(options: CreateCluster): Promise<Result<Model, SerializableError>> {
+		try {
+			return { status: 'ok', data: await TAURI_INVOKE('create_cluster', { options }) };
+		}
+		catch (e) {
+			if (e instanceof Error)
+				throw e;
+			else return { status: 'error', error: e as any };
+		}
+	},
+	async getClusters(): Promise<Result<Array<Model>, SerializableError>> {
+		try {
+			return { status: 'ok', data: await TAURI_INVOKE('get_clusters') };
+		}
+		catch (e) {
+			if (e instanceof Error)
+				throw e;
+			else return { status: 'error', error: e as any };
+		}
+	},
+	async getClusterById(id: bigint): Promise<Result<Model | null, SerializableError>> {
+		try {
+			return { status: 'ok', data: await TAURI_INVOKE('get_cluster_by_id', { id }) };
+		}
+		catch (e) {
+			if (e instanceof Error)
+				throw e;
+			else return { status: 'error', error: e as any };
+		}
+	},
+	async getGlobalProfile(): Promise<Result<SettingProfileModel, SerializableError>> {
+		try {
+			return { status: 'ok', data: await TAURI_INVOKE('get_global_profile') };
+		}
+		catch (e) {
+			if (e instanceof Error)
+				throw e;
+			else return { status: 'error', error: e as any };
+		}
+	},
+	async getProfileOrDefault(name: string | null): Promise<Result<SettingProfileModel, SerializableError>> {
+		try {
+			return { status: 'ok', data: await TAURI_INVOKE('get_profile_or_default', { name }) };
+		}
+		catch (e) {
+			if (e instanceof Error)
+				throw e;
+			else return { status: 'error', error: e as any };
+		}
+	},
 	async openDevTools(): Promise<void> {
 		await TAURI_INVOKE('open_dev_tools');
 	},
@@ -88,6 +138,10 @@ export const events = __makeEvents__<{
 
 /** user-defined types */
 
+export type ClusterStage = 'notready' | 'downloading' | 'repairing' | 'ready';
+export interface CreateCluster { name: string; mc_version: string; mc_loader: GameLoader; mc_loader_version: string | null; icon_url: Icon | null }
+export type GameLoader = 'vanilla' | 'forge' | 'neoforge' | 'quilt' | 'fabric' | 'legacyfabric';
+export type Icon = string;
 export interface IngressPayload { id: string; message: string; ingress_type: IngressType; percent: number | null; total: number }
 export type IngressType = { Download: { file_name: string } } | 'JavaPrepare' | 'JavaCheck' | 'JavaLocate' | 'MinecraftDownload' | { PrepareCluster: { cluster_name: string } };
 export type LauncherEvent = { Ingress: IngressPayload } | { Message: MessagePayload } | { Process: ProcessPayload };
@@ -119,9 +173,13 @@ export interface MinecraftCredentials {
 	expires: string;
 
 }
+export interface Model { id: bigint; folder_name: string; stage: ClusterStage; created_at: string; group_id: bigint | null; name: string; mc_version: string; mc_loader: GameLoader; mc_loader_version: string | null; last_played: string | null; overall_played: bigint | null; icon_url: Icon | null; setting_profile_name: string | null; linked_pack_id: string | null; linked_pack_version: string | null }
 export interface Process { pid: number; started_at: string; cluster_id: bigint; post_hook: string | null; account_id: string }
 export type ProcessPayload = { Starting: { command: string } } | { Started: { process: Process } } | { Stopped: { pid: number; exit_code: number } } | { Output: { pid: number; output: string } };
+export interface Resolution { width: number; height: number }
 export interface SerializableError { kind: 'CoreError' }
+export interface SettingProfileModel { name: string; java_id: bigint | null; res: Resolution | null; force_fullscreen: boolean | null; mem_max: number | null; launch_args: string | null; launch_env: string | null; hook_pre: string | null; hook_wrapper: string | null; hook_post: string | null; os_extra: SettingsOsExtra | null }
+export interface SettingsOsExtra { enable_gamemode: boolean | null }
 
 interface __EventObj__<T> {
 	listen: (
