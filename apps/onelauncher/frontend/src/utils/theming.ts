@@ -15,7 +15,7 @@ export const THEMES = {
 } as const satisfies Record<string, Theme>;
 
 export interface Theme {
-	variants: ThemeVariant[];
+	variants: Array<ThemeVariant>;
 }
 
 export type ThemeTypes = 'dark' | 'light';
