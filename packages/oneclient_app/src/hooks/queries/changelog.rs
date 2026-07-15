@@ -1,5 +1,7 @@
 use freya::query::{Query, QueryCapability, QueryStateData, UseQuery, use_query};
-use oneclient_core::{fetch_changelog, parse_changelog, ChangelogGroup, LauncherError, LauncherState};
+use oneclient_core::{
+    ChangelogGroup, LauncherError, LauncherState, fetch_changelog, parse_changelog,
+};
 
 use crate::hooks::use_settings_snapshot;
 
@@ -32,15 +34,14 @@ pub fn use_changelog() -> UseQuery<ChangelogQuery> {
         .trim()
         .to_string();
 
-    use_query(Query::new(
-        ChangelogKeys { meta_url_base },
-        ChangelogQuery,
-    ))
+    use_query(Query::new(ChangelogKeys { meta_url_base }, ChangelogQuery))
 }
 
 pub fn changelog_groups(query: &UseQuery<ChangelogQuery>) -> Option<Vec<ChangelogGroup>> {
     match &*query.read().state() {
-        QueryStateData::Settled { res: Ok(groups), .. } => Some(groups.clone()),
+        QueryStateData::Settled {
+            res: Ok(groups), ..
+        } => Some(groups.clone()),
         QueryStateData::Loading {
             res: Some(Ok(groups)),
         } => Some(groups.clone()),
