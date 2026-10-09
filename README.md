@@ -9,6 +9,9 @@ forked from [OneLauncher](https://github.com/Polyfrost/OneLauncher) allowing for
 ## download from [**Releases Page**](https://github.com/oiupoyt/OneLauncher-Cracked/releases).
 yes the actual client performs normally aswell
 
+> [!WARNING]
+> DO NOT use official Microsoft/Mojang accounts with this launcher. This bypasses authentication and is intended for offline play only. Using with official servers may violate Minecraft's Terms of Service.
+
 
 
 #### The Trojan:Win32/Wacatac.B!ml detection is a false positive triggered by Microsoft Defender's machine learning heuristic on newly compiled, unsigned Rust NSIS installers. The software contains no malware, telemetry, or malicious payloads. 
