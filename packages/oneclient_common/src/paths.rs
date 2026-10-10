@@ -112,8 +112,24 @@ pub fn logs_dir() -> PathsResult<PathBuf> {
     Ok(config_dir()?.join("logs"))
 }
 
+pub fn skins_dir() -> PathsResult<PathBuf> {
+    Ok(data_dir()?.join("skins"))
+}
+
+pub fn skin_file_path(uuid: &str) -> PathsResult<PathBuf> {
+    Ok(skins_dir()?.join(format!("{uuid}.png")))
+}
+
+pub fn skin_meta_path(uuid: &str) -> PathsResult<PathBuf> {
+    Ok(skins_dir()?.join(format!("{uuid}.json")))
+}
+
 pub fn java_dir() -> PathsResult<PathBuf> {
     Ok(data_dir()?.join("metadata").join("java"))
+}
+
+pub fn authlib_injector_path() -> PathsResult<PathBuf> {
+    Ok(data_dir()?.join("metadata").join("authlib-injector.jar"))
 }
 
 pub fn clusters_dir() -> PathsResult<PathBuf> {

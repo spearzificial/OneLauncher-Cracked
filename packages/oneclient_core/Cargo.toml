@@ -73,6 +73,8 @@ digest.workspace = true
 md-5.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+sha1_0_10 = { package = "sha1", version = "0.10", features = ["oid"] }
+rsa = { version = "0.9", features = ["sha1", "pem"] }
 
 # util
 base64.workspace = true

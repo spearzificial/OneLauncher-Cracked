@@ -314,6 +314,22 @@ async fn start(
         crate::game::link_cluster_logs(&cluster, &cwd).await;
     }
 
+    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
+
+    if account.is_offline() {
+        crate::game::skin_server::disable_incompatible_offline_mods(&[mods_dir.clone(), cwd.join("mods")]).await;
+        if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric
+            && version.id == "1.21.11"
+        {
+            if let Ok(mod_jar) = crate::game::skin_server::prepare_offline_skins_mod().await {
+                let target_mod = mods_dir.join("offlineskins-fabric.jar");
+                if !target_mod.exists() {
+                    let _ = polyio::copy(&mod_jar, &target_mod).await;
+                }
+            }
+        }
+    }
+
     let client_jar = paths::versions_dir()?
         .join(&version_name)
         .join(format!("{version_name}.jar"));
@@ -346,7 +362,6 @@ async fn start(
         java.major,
     )?;
 
-    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
     if let Some(arg) = crate::game::mods_folder_argument(
         cluster.mc_loader,
         loader_version_id,
@@ -355,6 +370,37 @@ async fn start(
     ) {
         tracing::debug!(cluster_id, mods_dir = %mods_dir.display(), "redirecting fabric mods folder");
         jvm_args.push(arg);
+    }
+
+    // Always clean up legacy jar patches and resource packs to ensure clean vanilla state
+    crate::game::skin_server::cleanup_legacy_skin_injection(&cwd, &client_jar).await;
+
+    let mut offline_skin_port = None;
+
+    // Attach proper Authlib-Injector offline skin system if running an offline account
+    if account.is_offline() {
+        let account_uuid_str = account.id.to_string();
+        crate::game::skin_server::register_launch_account(&account_uuid_str, &account.username);
+        crate::game::skin_server::sync_offline_skins(&cwd, &account_uuid_str, &account.username).await;
+        if let Some(parent) = mods_dir.parent()
+            && parent != cwd
+        {
+            crate::game::skin_server::sync_offline_skins(parent, &account_uuid_str, &account.username).await;
+        }
+
+        if let Ok(port) = crate::game::skin_server::ensure_skin_server().await
+            && let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await
+        {
+            offline_skin_port = Some(port);
+            let agent_arg = format!(
+                "-javaagent:{}=http://127.0.0.1:{port}",
+                injector_jar.display()
+            );
+            tracing::info!(%agent_arg, "attaching authlib-injector for proper offline skin support");
+            jvm_args.push(agent_arg);
+            jvm_args.push("-Dauthlibinjector.noShowServerName=true".to_string());
+            jvm_args.push("-Dauthlibinjector.noLogFile=true".to_string());
+        }
     }
 
     let mut mc_args = arguments::minecraft_arguments(
@@ -371,6 +417,19 @@ async fn start(
         profile.resolution.unwrap_or_default(),
         &java.os_arch,
     )?;
+
+    if account.is_offline()
+        && let Some(port) = offline_skin_port
+        && let Some(user_props) =
+            crate::game::skin_server::build_user_properties(&account.id.to_string(), port).await
+    {
+        for i in 0..mc_args.len() {
+            if mc_args[i] == "--userProperties" && i + 1 < mc_args.len() && mc_args[i + 1] == "{}" {
+                mc_args[i + 1] = user_props;
+                break;
+            }
+        }
+    }
     arguments::append_profile_game_arguments(
         &mut mc_args,
         profile.force_fullscreen,
