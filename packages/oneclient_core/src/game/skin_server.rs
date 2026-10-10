@@ -31,15 +31,15 @@ static SKIN_SERVER_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAI
 static SIGNING_KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
 
 pub fn sign_sha1_with_rsa(data: &[u8]) -> Option<String> {
-    use sha1::Digest;
+    use sha1_0_10::Digest;
     let key = SIGNING_KEY.get_or_init(|| {
         RsaPrivateKey::from_pkcs8_pem(SKIN_SERVER_PRIVATE_KEY_PEM)
             .expect("valid embedded private key")
     });
-    let mut hasher = sha1::Sha1::new();
+    let mut hasher = sha1_0_10::Sha1::new();
     hasher.update(data);
     let digest = hasher.finalize();
-    let signing_scheme = Pkcs1v15Sign::new::<sha1::Sha1>();
+    let signing_scheme = Pkcs1v15Sign::new::<sha1_0_10::Sha1>();
     let sig_bytes = key.sign(signing_scheme, &digest).ok()?;
     Some(base64::engine::general_purpose::STANDARD.encode(sig_bytes))
 }

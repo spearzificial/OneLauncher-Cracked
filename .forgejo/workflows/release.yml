@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release Tag (e.g. v2.5.1-c3)'
+        description: 'Release Tag (e.g. v2.8.0-c1)'
         required: false
-        default: 'v2.5.1-c3'
+        default: 'v2.8.0-c1'
         type: string
 
 permissions:
@@ -79,7 +79,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.5.1-c3" >> $GITHUB_OUTPUT
+            echo "tag=v2.8.0-c1" >> $GITHUB_OUTPUT
           fi
 
       - name: Publish Assets to Forgejo Release

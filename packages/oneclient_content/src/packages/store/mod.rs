@@ -10,8 +10,8 @@ pub use gc::{
     remove_unreferenced_files,
 };
 pub use link::{
-    LiveSync, link_or_copy, remove_entry, sweep_staging_files, try_link_materialized,
-    try_unlink_materialized,
+    LiveSync, drop_unmanaged_mod, link_or_copy, remove_entry, sweep_staging_files,
+    try_link_materialized, try_unlink_materialized,
 };
 pub use paths::{artifact_absolute_path, cache_file_path, relative_cache_path};
 
@@ -23,15 +23,17 @@ use oneclient_db::models::{ArtifactRow, ClusterRow, SeenStatus};
 
 use oneclient_common::domain::{ContentType, GameLoader, ProviderId};
 // `paths` alone is this module's own cache-path helpers
-use oneclient_common::paths as common_paths;
 use super::error::PackageError;
 use super::file_identity::FileIdentity;
+use super::types::{
+    CachedArtifact, LinkedArtifactInfo, ProjectDetail, ProviderReleaseInfo, VersionDetail,
+};
 use super::{local_manifest, metadata_cache};
-use super::types::{CachedArtifact, ProjectDetail, ProviderReleaseInfo, VersionDetail, LinkedArtifactInfo};
-use polyio::{normalize_hash, sha1_file};
-use oneclient_events::GroupedProgressChild;
 use crate::ctx::ContentCtx;
 use crate::error::{ContentError, ContentResult};
+use oneclient_common::paths as common_paths;
+use oneclient_events::GroupedProgressChild;
+use polyio::{normalize_hash, sha1_file};
 use std::path::{Path, PathBuf};
 
 pub struct PackageStore;
@@ -46,10 +48,7 @@ pub struct LocalImportReport {
 
 impl PackageStore {
     #[tracing::instrument(level = "debug", skip(ctx))]
-    pub async fn get_cluster(
-        cluster_id: i64,
-        ctx: &ContentCtx,
-    ) -> ContentResult<ClusterRow> {
+    pub async fn get_cluster(cluster_id: i64, ctx: &ContentCtx) -> ContentResult<ClusterRow> {
         cluster_dao::get_by_id(&ctx.db, cluster_id)
             .await?
             .ok_or(PackageError::ClusterNotFound(cluster_id).into())
@@ -91,7 +90,7 @@ impl PackageStore {
         .await
     }
 
-	#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(project, version, child, ctx), fields(project_id = %project.id, version_id = %version.version_id))]
     pub async fn install_to_cluster(
         provider_id: ProviderId,
@@ -110,15 +109,9 @@ impl PackageStore {
             ensure_compatible(project, version, &cluster)?;
         }
 
-        let artifact = Self::download_and_cache(
-            provider_id,
-            project,
-            version,
-            force_download,
-            child,
-            ctx,
-        )
-        .await?;
+        let artifact =
+            Self::download_and_cache(provider_id, project, version, force_download, child, ctx)
+                .await?;
 
         let enabled = Self::link_artifact(&artifact, &cluster, None, ctx).await?;
 
@@ -181,11 +174,7 @@ impl PackageStore {
     /// `packages` must not depend on `bundles` and its override reconciliation
     /// does not apply here
     #[tracing::instrument(level = "debug", skip(ctx))]
-    async fn unlink_superseded(
-        cluster_id: i64,
-        hash: &str,
-        ctx: &ContentCtx,
-    ) -> ContentResult<()> {
+    async fn unlink_superseded(cluster_id: i64, hash: &str, ctx: &ContentCtx) -> ContentResult<()> {
         let cluster = Self::get_cluster(cluster_id, ctx).await?;
         let content_type = artifact_dao::get_artifact_by_hash(&ctx.db, hash)
             .await?
@@ -194,8 +183,19 @@ impl PackageStore {
 
         artifact_dao::unlink_cluster_artifact(&ctx.db, cluster_id, hash).await?;
 
+        if let (Some(content_type), Some(link)) = (content_type, &link) {
+            let name = &link.cluster_file_name;
+            drop_unmanaged_mod(&cluster, content_type, name, hash, &ctx.db).await;
+        }
+
         if let (Some(content_type), Some(link)) = (content_type, link)
-            && link::try_unlink_materialized(&cluster, content_type, &link.cluster_file_name).await
+            && link::try_unlink_materialized(
+                &cluster,
+                content_type,
+                &link.cluster_file_name,
+                &ctx.db,
+            )
+            .await
                 == LiveSync::Deferred
         {
             return Ok(());
@@ -340,9 +340,11 @@ impl PackageStore {
             .await?
             .ok_or(PackageError::ArtifactMissing(hash.to_string()))?;
 
-        let content_type = ContentType::from_repr(artifact.content_type as u8)
-            .ok_or_else(|| ContentError::InvalidData {
-                reason: format!("unknown content type {}", artifact.content_type),
+        let content_type =
+            ContentType::from_repr(artifact.content_type as u8).ok_or_else(|| {
+                ContentError::InvalidData {
+                    reason: format!("unknown content type {}", artifact.content_type),
+                }
             })?;
 
         let enabled = target.unwrap_or(link.enabled == 0);
@@ -360,7 +362,7 @@ impl PackageStore {
         )
         .await?;
 
-        if content_type.is_global() {
+        if link::shares_content(&cluster, content_type) {
             artifact_dao::set_enabled_for_hash(&ctx.db, hash, i64::from(enabled)).await?;
         }
 
@@ -369,9 +371,10 @@ impl PackageStore {
         let live = if enabled {
             link::try_link_materialized(&cluster, &artifact, &file_name).await
         } else {
-            link::try_unlink_materialized(&cluster, content_type, &link.cluster_file_name).await;
+            link::try_unlink_materialized(&cluster, content_type, &link.cluster_file_name, &ctx.db)
+                .await;
             if link.cluster_file_name != file_name {
-                link::try_unlink_materialized(&cluster, content_type, &file_name).await;
+                link::try_unlink_materialized(&cluster, content_type, &file_name, &ctx.db).await;
             }
             LiveSync::Skipped
         };
@@ -437,9 +440,7 @@ impl PackageStore {
     ) -> ContentResult<ArtifactRow> {
         let provider = ctx.providers.get(provider_id)?;
 
-        let version = provider
-            .get_version(project_id, version_id, ctx)
-            .await?;
+        let version = provider.get_version(project_id, version_id, ctx).await?;
 
         let project = provider.get_project(project_id, ctx).await?;
 
@@ -455,6 +456,18 @@ async fn store_local_file(
     cluster: &ClusterRow,
     ctx: &ContentCtx,
 ) -> ContentResult<ArtifactRow> {
+    ensure_takes_mods(content_type, cluster)?;
+
+    let row = cache_local_file(path, content_type, ctx).await?;
+    PackageStore::link_artifact(&row, cluster, None, ctx).await?;
+    Ok(row)
+}
+
+pub async fn cache_local_file(
+    path: &Path,
+    content_type: ContentType,
+    ctx: &ContentCtx,
+) -> ContentResult<ArtifactRow> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -463,8 +476,9 @@ async fn store_local_file(
 
     let hash = normalize_hash(&sha1_file(path).await?);
 
-    if let Some(row) = artifact_dao::get_artifact_by_hash(&ctx.db, &hash).await? {
-        PackageStore::link_artifact(&row, cluster, None, ctx).await?;
+    if let Some(row) = artifact_dao::get_artifact_by_hash(&ctx.db, &hash).await?
+        && artifact_absolute_path(&row.path)?.exists()
+    {
         return Ok(row);
     }
 
@@ -483,7 +497,7 @@ async fn store_local_file(
     let size = polyio::stat(&dest).await?.len();
     let stored_path = relative_cache_path(&dest)?;
 
-    let row = artifact_dao::insert_artifact(
+    artifact_dao::insert_artifact(
         &ctx.db,
         &hash,
         content_type as i64,
@@ -491,10 +505,8 @@ async fn store_local_file(
         &file_name,
         Some(size as i64),
     )
-    .await?;
-
-    PackageStore::link_artifact(&row, cluster, None, ctx).await?;
-    Ok(row)
+    .await
+    .map_err(Into::into)
 }
 
 /// A dropped file arrives as a file name and nothing else so it is worth
@@ -657,10 +669,7 @@ async fn store_local_icon(hash: &str, jar: &std::path::Path, entry: &str) -> Opt
 }
 
 #[tracing::instrument(level = "debug", skip(row, ctx), fields(hash = %row.hash))]
-async fn row_to_cached(
-    row: ArtifactRow,
-    ctx: &ContentCtx,
-) -> ContentResult<CachedArtifact> {
+async fn row_to_cached(row: ArtifactRow, ctx: &ContentCtx) -> ContentResult<CachedArtifact> {
     let path = artifact_absolute_path(&row.path)?;
     let release = artifact_dao::get_release_by_hash(&ctx.db, &row.hash)
         .await?
@@ -689,6 +698,8 @@ fn ensure_compatible(
     version: &VersionDetail,
     cluster: &ClusterRow,
 ) -> ContentResult<()> {
+    ensure_takes_mods(project.content_type, cluster)?;
+
     if project.provider == ProviderId::Local {
         return Ok(());
     }
@@ -712,6 +723,17 @@ fn ensure_compatible(
         &cluster.mc_version,
     ) {
         return Err(PackageError::IncompatibleMcVersion.into());
+    }
+
+    Ok(())
+}
+
+fn ensure_takes_mods(content_type: ContentType, cluster: &ClusterRow) -> ContentResult<()> {
+    let vanilla = GameLoader::from_repr(cluster.mc_loader as u8)
+        .is_none_or(|loader| loader == GameLoader::Vanilla);
+
+    if content_type == ContentType::Mod && vanilla && cluster.is_isolated() {
+        return Err(PackageError::IncompatibleLoader.into());
     }
 
     Ok(())
@@ -777,6 +799,11 @@ mod tests {
             last_played: None,
             overall_played: None,
             linked_modpack_hash: None,
+            kind: 0,
+            user_created: 0,
+            description: None,
+            tags: "[]".into(),
+            cover_path: None,
         }
     }
 

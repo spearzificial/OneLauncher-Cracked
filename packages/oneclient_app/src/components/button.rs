@@ -56,7 +56,7 @@ pub struct Button {
     tooltip: Option<Box<str>>,
     tooltip_placement: TooltipPlacement,
     on_press: Option<EventHandler<Event<PressEventData>>>,
-	overflow: Overflow,
+    overflow: Overflow,
 
     elements: Vec<Element>,
     key: DiffKey,
@@ -118,7 +118,7 @@ impl Button {
             tooltip_placement: TooltipPlacement::default(),
             on_press: None,
             elements: Vec::new(),
-			overflow: Overflow::Clip,
+            overflow: Overflow::Clip,
             key: DiffKey::None,
             cursor_icon: CursorIcon::Pointer,
         }
@@ -158,10 +158,10 @@ impl Button {
         self
     }
 
-	pub fn overflow(mut self, overflow: Overflow) -> Self {
-		self.overflow = overflow;
-		self
-	}
+    pub fn overflow(mut self, overflow: Overflow) -> Self {
+        self.overflow = overflow;
+        self
+    }
 
     pub fn font_size(mut self, font_size: impl Into<f32>) -> Self {
         self.text_style.font_size = Some(font_size.into().into());
@@ -258,6 +258,8 @@ impl LayoutExt for Button {
 
 impl ContainerExt for Button {}
 
+impl DecorationExt for Button {}
+
 impl StyleExt for Button {
     fn get_style(&mut self) -> &mut StyleState {
         &mut self.style
@@ -346,7 +348,7 @@ impl Component for Button {
         if enabled() {
             rect = rect
                 .on_pointer_down(move |_| pressing.set(true))
-                .on_global_pointer_press(move |_| pressing.set(false))
+                .on_global_pointer_up(move |_| pressing.set(false))
                 .on_pointer_over(move |_| hovering.set(true))
                 .on_pointer_out(move |_| {
                     hovering.set(false);
@@ -477,4 +479,30 @@ pub fn open_folder_button(folder: std::path::PathBuf) -> Button {
             crate::platform::open_path(&folder.to_string_lossy());
         })
         .child(Icon::new(IconType::Folder).size(16.))
+}
+
+pub fn copy_button(text: String, copied_body: &'static str, dispatch: crate::Actions) -> Button {
+    Button::new()
+        .secondary()
+        .on_press(move |_| {
+            if let Err(err) = freya::text_edit::Clipboard::set(text.clone()) {
+                tracing::warn!("clipboard copy failed: {err:?}");
+                dispatch
+                    .notify("Copy failed")
+                    .body("Could not copy to the clipboard.")
+                    .error()
+                    .toast_only()
+                    .send();
+            } else {
+                dispatch
+                    .notify("Copied to clipboard")
+                    .body(copied_body)
+                    .info()
+                    .icon(IconType::ClipboardCheck)
+                    .toast_only()
+                    .send();
+            }
+        })
+        .child(Icon::new(IconType::Copy01).size(14.))
+        .text("Copy")
 }

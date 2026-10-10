@@ -22,27 +22,15 @@ impl QueryCapability for FetchPlayerProfileQuery {
     type Keys = PlayerProfileQueryKeys;
 
     async fn run(&self, keys: &Self::Keys) -> Result<Self::Ok, Self::Err> {
-        let uuid_str = &keys.uuid;
-        if uuid_str.is_empty() {
-            return Ok(PlayerProfileView::default());
-        }
-
-        if let Ok(u) = uuid::Uuid::parse_str(uuid_str) {
-            let is_offline = u.get_version() == Some(uuid::Version::Md5) || u.is_nil();
-            if is_offline {
-                return Ok(PlayerProfileView {
-                    uuid: uuid_str.clone(),
-                    ..Default::default()
-                });
-            }
-        }
-
         let access_token = keys.access_token.clone();
 
         let state = crate::launcher::state()?;
         let client = &state.services.requester;
 
-        Ok(minecraft::fetch_player_profile_view(client, &keys.uuid, access_token.as_deref()).await?)
+        Ok(
+            minecraft::fetch_player_profile_view(client, &keys.uuid, access_token.as_deref())
+                .await?,
+        )
     }
 
     // TODO Cache

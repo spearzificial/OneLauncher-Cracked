@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 use oneclient_events::{Choice, EventBus, Prompt};
@@ -279,7 +280,7 @@ async fn download_and_install_forgejo(release: ForgejoRelease, events: EventBus)
         .user_agent("OneLauncher-Cracked-Updater")
         .build()?;
 
-    let mut resp = client.get(&asset.browser_download_url).send().await?;
+    let resp = client.get(&asset.browser_download_url).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("Failed to download update asset: HTTP {}", resp.status());
     }
@@ -305,7 +306,11 @@ async fn download_and_install_forgejo(release: ForgejoRelease, events: EventBus)
     let mut downloaded = 0u64;
     let mut last_sent = 0u64;
 
-    while let Some(chunk) = resp.chunk().await? {
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res?;
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await?;
         downloaded += chunk.len() as u64;
 

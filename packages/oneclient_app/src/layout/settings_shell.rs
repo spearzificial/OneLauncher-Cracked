@@ -11,7 +11,9 @@ use sysinfo::MemoryRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
 
-use crate::components::{Icon, IconType, ScrollArea, ScrollAreaCtx, TextInput};
+use crate::components::{
+    Icon, IconType, ScrollArea, ScrollAreaCtx, TextInput, TooltipPlacement, use_tooltip_anchor,
+};
 use crate::hooks::{latest_changelog_version, use_changelog, use_settings_snapshot};
 use crate::routes::Route;
 use crate::theme::colors;
@@ -68,8 +70,16 @@ const SEARCH_INDEX: &[SearchItem] = &[
         title: "Launcher Folder",
         description: "Open the launcher data directory, or move it to another drive.",
         keywords: &[
-            "data dir", "directory", "folder", "open", "move", "change", "relocate", "location",
-            "drive", "disk",
+            "data dir",
+            "directory",
+            "folder",
+            "open",
+            "move",
+            "change",
+            "relocate",
+            "location",
+            "drive",
+            "disk",
         ],
         route: Route::SettingsLauncher {},
     },
@@ -457,11 +467,7 @@ impl Component for SettingsShell {
     }
 }
 
-fn content_header(
-    title: String,
-    search: State<String>,
-    mut width: State<f32>,
-) -> impl IntoElement {
+fn content_header(title: String, search: State<String>, mut width: State<f32>) -> impl IntoElement {
     let search_width = search_width_for(*width.read());
 
     rect()
@@ -726,6 +732,10 @@ impl SidebarInfo {
 impl Component for SidebarInfo {
     fn render(&self) -> impl IntoElement {
         let dispatch = use_dispatch();
+        let tooltip = use_tooltip_anchor(
+            Some("Click to copy to clipboard".into()),
+            TooltipPlacement::Top,
+        );
 
         let items: [Cow<'static, str>; 4] = [
             Cow::Borrowed(concat!(
@@ -754,6 +764,7 @@ impl Component for SidebarInfo {
                     .notify("Copy failed")
                     .body("Could not copy system information to the clipboard.")
                     .error()
+                    .toast_only()
                     .send();
             } else {
                 dispatch
@@ -761,26 +772,27 @@ impl Component for SidebarInfo {
                     .body("System information copied to your clipboard.")
                     .info()
                     .icon(IconType::ClipboardCheck)
+                    .toast_only()
                     .send();
             }
         };
 
-        rect()
-            .vertical()
-            .width(Size::fill())
-            .spacing(4.)
-            .font_size(12.)
-            .padding(Gaps::new(
-                15.,0.,0.,0.
-            ))
-            .color(colors::fg_secondary())
-            .children(
-                items
-                    .into_iter()
-                    .map(|item| label().text(item).into_element()),
-            )
-            .cursor(CursorIcon::Pointer)
-            .on_press(copy_to_clipboard)
+        tooltip.attach(
+            rect()
+                .vertical()
+                .width(Size::fill())
+                .spacing(4.)
+                .font_size(12.)
+                .padding(Gaps::new(15., 0., 0., 0.))
+                .color(colors::fg_secondary())
+                .children(
+                    items
+                        .into_iter()
+                        .map(|item| label().text(item).into_element()),
+                )
+                .cursor(CursorIcon::Pointer)
+                .on_press(copy_to_clipboard),
+        )
     }
 }
 

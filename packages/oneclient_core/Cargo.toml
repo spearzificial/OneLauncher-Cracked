@@ -17,7 +17,7 @@ path = "src/lib.rs"
 default = []
 
 [dev-dependencies]
-async-tungstenite = {version = "=0.32.1", features = ["tokio-runtime"]}
+async-tungstenite = {version = "=0.35.0", features = ["tokio-runtime"]}
 polyio = {workspace = true, features = ["testing"]}
 
 [dependencies]
@@ -73,6 +73,8 @@ digest.workspace = true
 md-5.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+sha1_0_10 = { package = "sha1", version = "0.10", features = ["oid"] }
+rsa = { version = "0.9", features = ["sha1", "pem"] }
 
 # util
 base64.workspace = true
@@ -92,7 +94,6 @@ sysinfo.workspace = true
 trash.workspace = true
 url.workspace = true
 uuid.workspace = true
-rsa = { version = "0.9", features = ["sha1", "pem"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

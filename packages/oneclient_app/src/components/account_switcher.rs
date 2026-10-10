@@ -6,7 +6,6 @@ use freya::{
 use oneclient_auth::MinecraftAccount;
 
 use crate::{
-    ui::{divider},
     Route,
     components::{Avatar, Button, Icon, IconType, OverlayPopup},
     hooks::{
@@ -14,6 +13,7 @@ use crate::{
         use_accounts, use_current_account, use_dispatch, use_set_default_account,
     },
     theme::colors,
+    ui::divider,
 };
 
 #[derive(PartialEq)]
@@ -91,7 +91,7 @@ impl Component for AccountPanel {
             .opacity(progress)
             .margin(Gaps::new((1.0 - progress) * -8.0, 0., 0., 0.))
             .background(colors::page_elevated().with_a(220))
-            .blur(12.)
+            .backdrop_blur(12.)
             .corner_radius(CornerRadius::new_all(12.))
             .border(
                 Border::new()
