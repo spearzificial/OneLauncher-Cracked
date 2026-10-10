@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 use oneclient_events::{Choice, EventBus, Prompt};
