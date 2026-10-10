@@ -28,13 +28,14 @@ fn offline_uuid_matches_vanilla_algorithm() {
 }
 
 #[tokio::test]
-async fn offline_account_blocked_without_microsoft() {
+async fn offline_account_allowed_without_microsoft() {
     isolate_launcher_dir();
 
     let mut store = CredentialsStore::default();
-    let err = store.add_offline_account("Steve".into()).unwrap_err();
+    let offline = store.add_offline_account("Steve".into()).unwrap();
 
-    assert!(err.to_string().contains("Microsoft"));
+    assert_eq!(offline.kind, AccountKind::Offline);
+    assert_eq!(offline.username, "Steve");
 }
 
 #[tokio::test]
@@ -51,7 +52,7 @@ async fn offline_account_allowed_when_microsoft_exists() {
 }
 
 #[tokio::test]
-async fn default_offline_fails_when_last_microsoft_removed() {
+async fn default_offline_works_when_last_microsoft_removed() {
     isolate_launcher_dir();
 
     let mut store = CredentialsStore::default();
@@ -60,11 +61,13 @@ async fn default_offline_fails_when_last_microsoft_removed() {
     store.users.insert(msa_id, msa);
 
     let offline = store.add_offline_account("Steve".into()).unwrap();
-    store.default_user = Some(offline.id);
+    let offline_id = offline.id;
+    store.default_user = Some(offline_id);
     store.users.remove(&msa_id);
 
-    let err = store.default_account().await.unwrap_err();
-    assert!(err.to_string().contains("Microsoft"));
+    let account = store.default_account().await.unwrap().unwrap();
+    assert_eq!(account.id, offline_id);
+    assert_eq!(account.kind, AccountKind::Offline);
 }
 
 #[test]
@@ -146,4 +149,30 @@ fn offline_accounts_never_need_sign_in() {
     account.signed_out = true;
 
     assert!(!account.needs_sign_in());
+}
+
+#[tokio::test]
+async fn offline_account_for_launch_succeeds_without_microsoft() {
+    isolate_launcher_dir();
+
+    let (events, _rx) = oneclient_events::EventBus::channel();
+    let net = oneclient_net::RequestClient::new(oneclient_net::NetConfig::default()).expect("net client");
+    let mut store = CredentialsStore::default();
+    let offline = store.add_offline_account("Steve".into()).unwrap();
+    let service = oneclient_auth::AuthService::with_store(store, net, events);
+
+    let launched = service
+        .account_for_launch(offline.id)
+        .await
+        .expect("offline account must be allowed for launch without Microsoft account");
+    assert_eq!(launched.id, offline.id);
+    assert_eq!(launched.username, "Steve");
+    assert_eq!(launched.kind, AccountKind::Offline);
+
+    let default_launched = service
+        .default_account_for_launch()
+        .await
+        .expect("default offline account must be allowed for launch")
+        .expect("default account should exist");
+    assert_eq!(default_launched.id, offline.id);
 }

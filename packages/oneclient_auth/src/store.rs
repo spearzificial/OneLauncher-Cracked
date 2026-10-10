@@ -23,8 +23,13 @@ impl CredentialsStore {
             return Ok(Self::default());
         }
 
-        match polyio::read_json(&path).await {
-            Ok(store) => Ok(store),
+        match polyio::read_json::<Self>(&path).await {
+            Ok(mut store) => {
+                if store.default_user.is_none() && !store.users.is_empty() {
+                    store.default_user = store.users.keys().copied().next();
+                }
+                Ok(store)
+            }
             Err(err) => {
                 tracing::warn!("failed to read auth file: {err}");
                 Ok(Self::default())
@@ -91,22 +96,22 @@ impl CredentialsStore {
     }
 
     fn insert_offline_account(&mut self, username: String) -> AuthResult<MinecraftAccount> {
-        if !self.has_microsoft_account() {
-            return Err(AuthError::OfflineRequiresMicrosoft);
-        }
-
         validate_offline_username(&username)?;
 
-        if self
+        if let Some(existing) = self
             .users
             .values()
-            .any(|u| u.username.eq_ignore_ascii_case(&username))
+            .find(|u| u.username.eq_ignore_ascii_case(&username))
+            .cloned()
         {
-            return Err(AuthError::DuplicateUsername { username });
+            self.default_user = Some(existing.id);
+            return Ok(existing);
         }
 
         let account = offline_account(username);
-        self.users.insert(account.id, account.clone());
+        let id = account.id;
+        self.users.insert(id, account.clone());
+        self.default_user = Some(id);
         Ok(account)
     }
 
@@ -205,10 +210,6 @@ impl CredentialsStore {
             return Ok(None);
         };
 
-        if account.is_offline() && !self.has_microsoft_account() {
-            return Err(AuthError::OfflineRequiresMicrosoft);
-        }
-
         Ok(Some(account))
     }
 }
@@ -221,4 +222,51 @@ pub(crate) fn is_transient_auth_error(err: &AuthError) -> bool {
         AuthError::Minecraft(crate::error::MinecraftAuthError::RequestError { source, .. })
             if source.is_connect() || source.is_timeout()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_offline_account_creation_sets_default() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let account = store.insert_offline_account("Player".to_string()).unwrap();
+        assert_eq!(account.username, "Player");
+        assert_eq!(store.default_user, Some(account.id));
+        assert_eq!(store.users.len(), 1);
+    }
+
+    #[test]
+    fn test_custom_username_switches_default() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let p1 = store.insert_offline_account("Player".to_string()).unwrap();
+        assert_eq!(store.default_user, Some(p1.id));
+
+        let p2 = store.insert_offline_account("Steve".to_string()).unwrap();
+        assert_eq!(store.default_user, Some(p2.id));
+        assert_eq!(store.users.len(), 2);
+    }
+
+    #[test]
+    fn test_case_insensitive_username_reuse() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let p1 = store.insert_offline_account("Steve".to_string()).unwrap();
+        let p2 = store.insert_offline_account("steve".to_string()).unwrap();
+        assert_eq!(p1.id, p2.id);
+        assert_eq!(store.users.len(), 1);
+        assert_eq!(store.default_user, Some(p1.id));
+    }
 }
