@@ -9,12 +9,12 @@ authors = [
   "Polyfrost",
   "Polyfrost Contributors",
 ]
-documentation = "https://github.com/oiupoyt/OneLauncher-Cracked"
+documentation = "https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked"
 edition = "2024"
 homepage = "https://polyfrost.org/projects/oneclient"
 license = "GPL-3.0-only"
 readme = "README.md"
-repository = "https://github.com/oiupoyt/OneLauncher-Cracked"
+repository = "https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked"
 rust-version = "1.97"
 version = "2.5.1-c3"
 

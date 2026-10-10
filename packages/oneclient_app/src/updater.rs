@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use oneclient_events::{Choice, EventBus, Prompt};
 use uuid::Uuid;
 
-use crate::constants::GITHUB_API_LATEST_RELEASE;
+use crate::constants::FORGEJO_API_LATEST_RELEASE;
 
 pub const UPDATE_CHOICE_INSTALL: &str = "update.install";
 
@@ -66,24 +66,28 @@ impl CrackedVersion {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct GithubRelease {
+pub struct ForgejoRelease {
     pub tag_name: String,
     pub name: Option<String>,
     pub body: Option<String>,
     pub html_url: String,
     #[serde(default)]
-    pub assets: Vec<GithubReleaseAsset>,
+    pub assets: Vec<ForgejoReleaseAsset>,
 }
 
+pub type GithubRelease = ForgejoRelease;
+
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct GithubReleaseAsset {
+pub struct ForgejoReleaseAsset {
     pub name: String,
     pub size: u64,
     pub browser_download_url: String,
 }
 
-impl GithubRelease {
-    pub fn find_installer_asset(&self) -> Option<&GithubReleaseAsset> {
+pub type GithubReleaseAsset = ForgejoReleaseAsset;
+
+impl ForgejoRelease {
+    pub fn find_installer_asset(&self) -> Option<&ForgejoReleaseAsset> {
         #[cfg(target_os = "windows")]
         {
             self.assets.iter().find(|a| a.name.ends_with("_x64-setup.exe") || a.name.ends_with("-setup.exe") || a.name.ends_with(".exe"))
@@ -163,7 +167,7 @@ async fn run_simulated_update() -> anyhow::Result<()> {
 }
 
 async fn run_check(auto_install: bool, events: EventBus) -> anyhow::Result<()> {
-    let Some(release) = check_for_github_update().await? else {
+    let Some(release) = check_for_forgejo_update().await? else {
         tracing::info!("no update available");
         return Ok(());
     };
@@ -187,7 +191,7 @@ async fn run_check(auto_install: bool, events: EventBus) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    download_and_install_github(release, events).await
+    download_and_install_forgejo(release, events).await
 }
 
 fn can_self_update() -> bool {
@@ -215,23 +219,23 @@ fn can_self_update() -> bool {
     }
 }
 
-async fn check_for_github_update() -> anyhow::Result<Option<GithubRelease>> {
+async fn check_for_forgejo_update() -> anyhow::Result<Option<ForgejoRelease>> {
     let client = reqwest::Client::builder()
         .user_agent("OneLauncher-Cracked-Updater")
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
     let resp = client
-        .get(GITHUB_API_LATEST_RELEASE)
+        .get(FORGEJO_API_LATEST_RELEASE)
         .send()
         .await?;
 
     if !resp.status().is_success() {
-        tracing::debug!("GitHub releases API returned status: {}", resp.status());
+        tracing::debug!("Forgejo releases API returned status: {}", resp.status());
         return Ok(None);
     }
 
-    let release: GithubRelease = resp.json().await?;
+    let release: ForgejoRelease = resp.json().await?;
 
     let current_str = env!("CARGO_PKG_VERSION");
     let current_ver = CrackedVersion::parse(current_str).unwrap_or(CrackedVersion {
@@ -253,7 +257,7 @@ async fn check_for_github_update() -> anyhow::Result<Option<GithubRelease>> {
     }
 }
 
-async fn download_and_install_github(release: GithubRelease, events: EventBus) -> anyhow::Result<()> {
+async fn download_and_install_forgejo(release: ForgejoRelease, events: EventBus) -> anyhow::Result<()> {
     let Some(asset) = release.find_installer_asset() else {
         events
             .notify("Update available")
