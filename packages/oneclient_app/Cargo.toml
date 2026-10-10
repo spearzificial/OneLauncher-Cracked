@@ -46,6 +46,9 @@ regex.workspace = true
 directories.workspace = true
 dunce.workspace = true
 percent-encoding.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest.workspace = true
 
 cargo-packager-updater = "=0.2.3"
 

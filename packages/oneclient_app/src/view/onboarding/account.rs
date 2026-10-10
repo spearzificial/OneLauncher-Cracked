@@ -1,12 +1,18 @@
 use freya::prelude::*;
+use freya::query::MutationStateData;
+use freya::router::RouterContext;
 use oneclient_auth::MinecraftAccount;
 
-use crate::components::{Avatar, Button, Icon, IconType, use_microsoft_login};
-use crate::hooks::{try_default_account, use_current_account};
+use crate::components::{
+    Avatar, Button, Icon, IconType, TextInput, use_microsoft_login,
+};
+use crate::hooks::{
+    AddOfflineAccountKeys, try_default_account, use_add_offline_account, use_current_account,
+};
 use crate::routes::Route;
 use crate::theme::colors;
 use crate::view::onboarding::{
-    onboarding_illustration, onboarding_nav, onboarding_page, step_heading,
+    onboarding_illustration, onboarding_page, step_heading,
 };
 
 #[derive(PartialEq)]
@@ -16,9 +22,30 @@ impl Component for OnboardingAccount {
     fn render(&self) -> impl IntoElement {
         let account_query = use_current_account();
         let msa = use_microsoft_login();
+        let add_offline = use_add_offline_account();
+
+        let offline_name = use_state(|| "Player".to_string());
+        let is_editing = use_state(|| false);
+        let mut is_navigating = use_state(|| false);
+
+        use_side_effect(move || {
+            if !*is_navigating.read() {
+                return;
+            }
+            match &*add_offline.read().state() {
+                MutationStateData::Settled { res: Ok(_), .. } => {
+                    is_navigating.set(false);
+                    let _ = RouterContext::get().replace(Route::OnboardingBundles {});
+                }
+                MutationStateData::Settled { res: Err(_), .. } => {
+                    is_navigating.set(false);
+                }
+                _ => {}
+            }
+        });
 
         let account = try_default_account(&account_query);
-        let has_account = account.is_some();
+        let show_entry = account.is_none() || *is_editing.read();
 
         let content = rect()
             .vertical()
@@ -26,26 +53,155 @@ impl Component for OnboardingAccount {
             .spacing(24.)
             .child(step_heading(
                 "Account",
-                "Before you continue, we require you to own a copy of Minecraft: Java Edition.",
+                "Enter your offline username to play, or sign in with your Microsoft account.",
             ))
-            .child(match &account {
-                Some(account) => account_preview(account).into_element(),
-                None => {
-                    let start = msa.clone();
-                    sign_in_card(msa.pending, msa.error.clone(), move |_| start.start())
-                        .into_element()
-                }
+            .child(if show_entry {
+                let start = msa.clone();
+                let add_offline_click = add_offline;
+                let mut is_editing_save = is_editing;
+                let offline_name_read = offline_name;
+
+                rect()
+                    .vertical()
+                    .spacing(16.)
+                    .child(
+                        rect()
+                            .vertical()
+                            .spacing(8.)
+                            .child(
+                                label()
+                                    .text("Choose Username:")
+                                    .font_size(14.)
+                                    .font_weight(FontWeight::SEMI_BOLD)
+                                    .color(colors::fg_primary()),
+                            )
+                            .child(
+                                rect()
+                                    .horizontal()
+                                    .spacing(8.)
+                                    .cross_align(Alignment::Center)
+                                    .child(
+                                        TextInput::new(offline_name)
+                                            .placeholder("Enter username (e.g. Steve)")
+                                            .width(Size::px(240.)),
+                                    )
+                                    .child(
+                                        Button::new()
+                                            .primary()
+                                            .large()
+                                            .on_press(move |_| {
+                                                let target = sanitize_offline_username(&offline_name_read.read());
+                                                add_offline_click.mutate(AddOfflineAccountKeys {
+                                                    username: target,
+                                                });
+                                                is_editing_save.set(false);
+                                            })
+                                            .text("Set & Play"),
+                                    ),
+                            )
+                            .child(
+                                label()
+                                    .text("3–16 characters (letters, numbers, underscore)")
+                                    .font_size(11.)
+                                    .color(colors::fg_secondary()),
+                            ),
+                    )
+                    .child(
+                        rect()
+                            .horizontal()
+                            .cross_align(Alignment::Center)
+                            .spacing(8.)
+                            .child(
+                                label()
+                                    .text("— or sign in with Microsoft —")
+                                    .font_size(12.)
+                                    .color(colors::fg_secondary()),
+                            ),
+                    )
+                    .child(sign_in_card(msa.pending, msa.error.clone(), move |_| {
+                        start.start()
+                    }))
+                    .into_element()
+            } else {
+                let mut is_editing_toggle = is_editing;
+                let account = account.as_ref().unwrap();
+
+                rect()
+                    .vertical()
+                    .spacing(16.)
+                    .child(account_preview(account))
+                    .child(
+                        rect()
+                            .horizontal()
+                            .spacing(8.)
+                            .child(
+                                Button::new()
+                                    .secondary()
+                                    .on_press(move |_| {
+                                        is_editing_toggle.set(true);
+                                    })
+                                    .text("Change Username"),
+                            ),
+                    )
+                    .into_element()
             })
             .into_element();
+
+        let add_offline_nav = add_offline;
+        let offline_name_nav = offline_name;
+        let is_editing_nav = is_editing;
+        let mut is_navigating_nav = is_navigating;
+        let account_clone = account.clone();
+
+        let on_next = move |_| {
+            if *is_navigating_nav.read() {
+                return;
+            }
+            if account_clone.is_none() || *is_editing_nav.read() {
+                let target = sanitize_offline_username(&offline_name_nav.read());
+                add_offline_nav.mutate(AddOfflineAccountKeys {
+                    username: target,
+                });
+                is_navigating_nav.set(true);
+            } else {
+                let _ = RouterContext::get().replace(Route::OnboardingBundles {});
+            }
+        };
+
+        let nav = rect()
+            .horizontal()
+            .width(Size::fill())
+            .main_align(Alignment::End)
+            .cross_align(Alignment::Center)
+            .spacing(12.)
+            .padding(Gaps::new(0., 40., 32., 40.))
+            .child(
+                Button::new()
+                    .secondary()
+                    .width(Size::px(128.))
+                    .on_press(move |_| {
+                        let _ = RouterContext::get().replace(Route::OnboardingLanguage {});
+                    })
+                    .text("Back"),
+            )
+            .child(
+                Button::new()
+                    .primary()
+                    .width(Size::px(140.))
+                    .enabled(!*is_navigating.read())
+                    .on_press(on_next)
+                    .text(if *is_navigating.read() {
+                        "Saving..."
+                    } else {
+                        "Next"
+                    })
+                    .child(Icon::new(IconType::ArrowRight).size(16.)),
+            );
 
         let page = onboarding_page(
             onboarding_illustration(IconType::OnboardingAccount),
             content,
-            onboarding_nav(
-                Some(Route::OnboardingLanguage {}),
-                Route::OnboardingBundles {},
-                has_account,
-            ),
+            nav,
         );
 
         rect()
@@ -130,3 +286,19 @@ fn sign_in_card(
         }))
         .into_element()
 }
+
+fn sanitize_offline_username(input: &str) -> String {
+    let trimmed = input.trim();
+    let sanitized: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if sanitized.len() < 3 {
+        "Player".to_string()
+    } else if sanitized.len() > 16 {
+        sanitized[..16].to_string()
+    } else {
+        sanitized
+    }
+}
+

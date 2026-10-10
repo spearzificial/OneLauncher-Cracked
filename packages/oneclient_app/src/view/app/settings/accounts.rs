@@ -42,6 +42,8 @@ impl Component for SettingsAccounts {
         let mut username = use_state(String::new);
         let mut show_offline = use_state(|| false);
         let mut closing_offline = use_state(|| false);
+        let edit_account = use_state(|| None::<(Uuid, String)>);
+        let edit_name = use_state(String::new);
 
         use_side_effect(move || {
             if !*closing_offline.read() {
@@ -94,6 +96,8 @@ impl Component for SettingsAccounts {
                     remove,
                     refresh,
                     sign_in: msa.clone(),
+                    edit_account,
+                    edit_name,
                 }
                 .into_element()
             })
@@ -125,6 +129,78 @@ impl Component for SettingsAccounts {
                     show_offline,
                 )
             }))
+            .maybe_child(edit_account.read().as_ref().map(|(id, _)| {
+                let id = *id;
+                let mut edit_account = edit_account;
+                OverlayPopup::new()
+                    .on_close(move |()| edit_account.set(None))
+                    .child(
+                        rect()
+                            .width(Size::window_percent(100.))
+                            .height(Size::window_percent(100.))
+                            .center()
+                            .child(
+                                rect()
+                                    .vertical()
+                                    .width(Size::px(380.))
+                                    .max_width(Size::window_percent(90.))
+                                    .spacing(16.)
+                                    .padding(Gaps::new_all(20.))
+                                    .corner_radius(CornerRadius::new_all(16.))
+                                    .background(colors::page_elevated())
+                                    .border(border_all_color(1., colors::component_border()))
+                                    .child(
+                                        label()
+                                            .text("Edit offline username")
+                                            .font_size(18.)
+                                            .font_weight(FontWeight::SEMI_BOLD)
+                                            .color(colors::fg_primary()),
+                                    )
+                                    .child(
+                                        rect()
+                                            .vertical()
+                                            .width(Size::fill())
+                                            .spacing(6.)
+                                            .child(field_label("New Username"))
+                                            .child(TextInput::new(edit_name).placeholder("Enter new username")),
+                                    )
+                                    .child(
+                                        rect()
+                                            .horizontal()
+                                            .width(Size::fill())
+                                            .main_align(Alignment::End)
+                                            .spacing(8.)
+                                            .child(
+                                                Button::new()
+                                                    .ghost()
+                                                    .on_press(move |_| edit_account.set(None))
+                                                    .text("Cancel"),
+                                            )
+                                            .child(
+                                                Button::new()
+                                                    .primary()
+                                                    .on_press(move |_| {
+                                                        let new_name = edit_name.peek().trim().to_string();
+                                                        if !new_name.is_empty() {
+                                                            let mut edit_account = edit_account;
+                                                            spawn(async move {
+                                                                if let Ok(state) = crate::launcher::state() {
+                                                                    let _ = state.auth.remove_account(id).await;
+                                                                    if let Ok(new_acc) = state.auth.add_offline_account(new_name).await {
+                                                                        let _ = state.auth.set_default_account(Some(new_acc.id)).await;
+                                                                        crate::hooks::invalidate_auth_queries(Some(new_acc.id)).await;
+                                                                    }
+                                                                }
+                                                                edit_account.set(None);
+                                                            });
+                                                        }
+                                                    })
+                                                    .text("Save"),
+                                            ),
+                                    ),
+                            ),
+                    )
+            }))
             .maybe_child(msa.popup())
             .into_element()
     }
@@ -132,7 +208,7 @@ impl Component for SettingsAccounts {
 
 fn hero(
     account: Option<MinecraftAccount>,
-    has_microsoft: bool,
+    _has_microsoft: bool,
     microsoft_pending: bool,
     error: Option<String>,
     on_open_offline: impl FnMut(Event<PressEventData>) + 'static,
@@ -219,16 +295,25 @@ fn hero(
                                 .child(
                                     Button::new()
                                         .secondary()
-                                        .enabled(has_microsoft)
+                                        .enabled(true)
                                         .on_press(on_open_offline)
                                         .child(Icon::new(IconType::Plus).size(16.))
                                         .text("Add offline"),
+                                )
+                                .child(
+                                    Button::new()
+                                        .secondary()
+                                        .on_press(|_| {
+                                            let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                                        })
+                                        .child(Icon::new(IconType::Colors).size(16.))
+                                        .text("Change Skin"),
                                 ),
                         )
                         .map(error, |el, msg| {
                             el.child(hint_line(IconType::AlertTriangle, msg, colors::danger()))
                         })
-                        .maybe(!has_microsoft, |el| {
+                        .maybe(false, |el| {
                             el.child(hint_line(
                                 IconType::InfoCircle,
                                 "Add a Microsoft account before creating offline accounts."
@@ -417,6 +502,8 @@ struct AccountRow {
     remove: crate::hooks::UseRemoveAccount,
     refresh: crate::hooks::UseRefreshAccount,
     sign_in: MicrosoftLogin,
+    edit_account: State<Option<(Uuid, String)>>,
+    edit_name: State<String>,
 }
 
 impl PartialEq for AccountRow {
@@ -428,6 +515,8 @@ impl PartialEq for AccountRow {
             && self.signed_out == other.signed_out
             && self.is_default == other.is_default
             && self.sign_in.pending == other.sign_in.pending
+            && self.edit_account == other.edit_account
+            && self.edit_name == other.edit_name
     }
 }
 
@@ -594,14 +683,43 @@ impl Component for AccountRow {
                 Button::new()
                     .ghost()
                     .icon()
-                    .enabled(false)
-                    .tooltip("Edit")
+                    .tooltip("Change Skin")
+                    .on_press(move |e: Event<PressEventData>| {
+                        e.stop_propagation();
+                        let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                    })
+                    .child(
+                        Icon::new(IconType::Colors)
+                            .size(18.)
+                            .color(colors::fg_primary()),
+                    ),
+            )
+            .child({
+                let is_offline = !is_microsoft;
+                let mut edit_acc_state = self.edit_account;
+                let mut edit_name_state = self.edit_name;
+                let username_val = self.username.clone();
+                let id_val = self.id;
+                Button::new()
+                    .ghost()
+                    .icon()
+                    .enabled(is_offline)
+                    .tooltip("Edit username")
+                    .on_press(move |e: Event<PressEventData>| {
+                        e.stop_propagation();
+                        edit_name_state.set(username_val.clone());
+                        edit_acc_state.set(Some((id_val, username_val.clone())));
+                    })
                     .child(
                         Icon::new(IconType::Pencil01)
                             .size(18.)
-                            .color(colors::fg_secondary()),
-                    ),
-            )
+                            .color(if is_offline {
+                                colors::fg_primary()
+                            } else {
+                                colors::fg_secondary()
+                            }),
+                    )
+            })
             .child(
                 Button::new()
                     .ghost()
