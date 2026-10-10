@@ -1,0 +1,122 @@
+name: Release Binaries (Forgejo)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (e.g. v2.8.0-c1)'
+        required: false
+        default: 'v2.8.0-c1'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  SQLX_OFFLINE: true
+  SQLX_OFFLINE_DIR: packages/oneclient_db/.sqlx
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+          cache-all-crates: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libasound2-dev
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked || true
+
+      - name: Build Release Binary
+        run: cargo build --release --bin oneclient_app --target x86_64-unknown-linux-gnu
+
+      - name: Package Application
+        run: cargo packager --release --target x86_64-unknown-linux-gnu --formats deb,appimage
+        continue-on-error: true
+
+      - name: Generate RPM Package (Linux)
+        run: |
+          cargo install cargo-generate-rpm --locked || true
+          cargo generate-rpm --target x86_64-unknown-linux-gnu -p oneclient_app || true
+
+      - name: Determine Release Tag
+        id: release_tag
+        run: |
+          if [[ "${{ github.ref_name }}" =~ ^v ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=v2.8.0-c1" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish Assets to Forgejo Release
+        run: |
+          TAG="${{ steps.release_tag.outputs.tag }}"
+          API_URL="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+          echo "Connecting to $API_URL for release $TAG"
+
+          # 1. Fetch or create release on Forgejo
+          RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL/releases/tags/$TAG" | jq -r '.id // empty')
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            RESP=$(curl -s -X POST "$API_URL/releases" \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"OneLauncher-Cracked $TAG\",\"draft\":false,\"prerelease\":false,\"target_commitish\":\"main\"}")
+            RELEASE_ID=$(echo "$RESP" | jq -r '.id // empty')
+          fi
+          echo "Target Release ID: $RELEASE_ID"
+
+          # 2. Upload generated packages
+          shopt -s nullglob
+          FILES=(
+            target/x86_64-unknown-linux-gnu/release/*.deb
+            target/x86_64-unknown-linux-gnu/release/*.AppImage
+            target/x86_64-unknown-linux-gnu/generate-rpm/*.rpm
+            target/release/*.deb
+            target/release/*.AppImage
+            target/generate-rpm/*.rpm
+          )
+
+          for f in "${FILES[@]}"; do
+            if [ -f "$f" ]; then
+              fname=$(basename "$f")
+              echo "Uploading asset $fname..."
+              curl -s -X POST "$API_URL/releases/$RELEASE_ID/assets?name=$fname" \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -F "attachment=@$f"
+            fi
+          done
+          echo "Release upload completed!"

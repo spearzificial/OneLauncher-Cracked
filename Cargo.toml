@@ -9,14 +9,14 @@ authors = [
   "Polyfrost",
   "Polyfrost Contributors",
 ]
-documentation = "https://github.com/Polyfrost/OneLauncher"
+documentation = "https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked"
 edition = "2024"
 homepage = "https://polyfrost.org/projects/oneclient"
 license = "GPL-3.0-only"
 readme = "README.md"
-repository = "https://github.com/Polyfrost/OneLauncher"
+repository = "https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked"
 rust-version = "1.97"
-version = "2.8.0"
+version = "2.8.0-c1"
 
 [workspace.dependencies]
 # core
@@ -172,3 +172,7 @@ codegen-units = 16
 debug = true
 lto = false
 strip = false
+
+[profile.dev]
+debug = 0
+strip = "debuginfo"
