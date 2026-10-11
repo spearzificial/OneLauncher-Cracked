@@ -151,8 +151,8 @@ freya-skia-safe = "=0.103.2" # required for the SKSL player renderer
 image = {version = "=0.25.10", default-features = false, features = ["png", "jpeg"]}
 
 [profile.release]
-codegen-units = 1
-debug = "line-tables-only"
+codegen-units = 16
+debug = false
 lto = "thin"
 opt-level = 3
 panic = "abort"
@@ -174,5 +174,9 @@ lto = false
 strip = false
 
 [profile.dev]
+opt-level = 0
 debug = 0
 strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2

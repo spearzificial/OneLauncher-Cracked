@@ -150,9 +150,6 @@ pub async fn save_account_skin(
         .await
         .map_err(|e| e.to_string())?;
 
-    let skin_path = skin_file_path(uuid).map_err(|e| e.to_string())?;
-    let meta_path = skin_meta_path(uuid).map_err(|e| e.to_string())?;
-
     let img = image::load_from_memory(skin_bytes)
         .map_err(|e| format!("Invalid image format: {e}"))?
         .to_rgba8();
@@ -177,17 +174,20 @@ pub async fn save_account_skin(
         .write_to(&mut cursor, image::ImageFormat::Png)
         .map_err(|e| format!("Failed to encode PNG: {e}"))?;
 
-    polyio::write(&skin_path, &png_bytes)
-        .await
-        .map_err(|e| format!("Failed to write skin file: {e}"))?;
-
     let meta = SkinMetadata { is_slim };
     let meta_json = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
 
-    polyio::write(&meta_path, meta_json.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write skin metadata: {e}"))?;
+    for dir in oneclient_common::paths::all_skins_dirs() {
+        let _ = polyio::create_dir_all(&dir).await;
+        let _ = polyio::write(&dir.join(format!("{uuid}.png")), &png_bytes).await;
+        let _ = polyio::write(&dir.join(format!("{uuid}.json")), meta_json.as_bytes()).await;
+        let _ = polyio::write(&dir.join(format!("{uuid}.meta.json")), meta_json.as_bytes()).await;
+        if let Some(uname) = username.filter(|u| !u.is_empty()) {
+            let _ = polyio::write(&dir.join(format!("{uname}.png")), &png_bytes).await;
+            let _ = polyio::write(&dir.join(format!("{uname}.json")), meta_json.as_bytes()).await;
+        }
+    }
 
     if let Some(uname) = username.filter(|u| !u.is_empty()) {
         let _ = sync_custom_skin_loader(uname, &png_bytes).await;
@@ -199,14 +199,14 @@ pub async fn save_account_skin(
 }
 
 pub async fn delete_account_skin(uuid: &str, username: Option<&str>) -> Result<(), String> {
-    let skin_path = skin_file_path(uuid).map_err(|e| e.to_string())?;
-    let meta_path = skin_meta_path(uuid).map_err(|e| e.to_string())?;
-
-    if skin_path.exists() {
-        let _ = polyio::remove_file(&skin_path).await;
-    }
-    if meta_path.exists() {
-        let _ = polyio::remove_file(&meta_path).await;
+    for dir in oneclient_common::paths::all_skins_dirs() {
+        let _ = polyio::remove_file(&dir.join(format!("{uuid}.png"))).await;
+        let _ = polyio::remove_file(&dir.join(format!("{uuid}.json"))).await;
+        let _ = polyio::remove_file(&dir.join(format!("{uuid}.meta.json"))).await;
+        if let Some(uname) = username.filter(|u| !u.is_empty()) {
+            let _ = polyio::remove_file(&dir.join(format!("{uname}.png"))).await;
+            let _ = polyio::remove_file(&dir.join(format!("{uname}.json"))).await;
+        }
     }
 
     if let Some(uname) = username.filter(|u| !u.is_empty()) {

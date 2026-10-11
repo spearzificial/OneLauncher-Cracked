@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use oneclient_common::paths::{
-    authlib_injector_path, shared_minecraft_dir, skin_file_path, skin_meta_path, skins_dir,
+    authlib_injector_path, shared_minecraft_dir,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -185,9 +185,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
     tracing::info!(method, uri, "skin_server incoming request");
 
     if method != "GET" && method != "HEAD" && method != "POST" {
-        let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        stream.write_all(response.as_bytes()).await?;
-        return Ok(());
+        return send_no_content(stream).await;
     }
 
     let path = uri.split('?').next().unwrap_or(uri);
@@ -200,16 +198,10 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
                 "implementationName": "onelauncher-skin-server",
                 "implementationVersion": env!("CARGO_PKG_VERSION")
             },
-            "skinDomains": ["127.0.0.1", "localhost"],
+            "skinDomains": ["127.0.0.1", "localhost", ".minecraft.net", ".mojang.com"],
             "signaturePublickey": SKIN_SERVER_PUBLIC_KEY
         }).to_string();
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(header.as_bytes()).await?;
-        return Ok(());
+        return send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes()).await;
     }
 
     // 2. Public keys endpoint (for Minecraft 1.19+ profile signature verification)
@@ -219,13 +211,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
             "profilePropertyKeys": [{"publicKey": key_b64}],
             "playerCertificateKeys": [{"publicKey": key_b64}]
         }).to_string();
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(header.as_bytes()).await?;
-        return Ok(());
+        return send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes()).await;
     }
 
     // 3. Profiles by names endpoint (bulk profile lookup)
@@ -243,13 +229,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
             }
         }
         let body = serde_json::to_string(&profiles).unwrap_or_else(|_| "[]".to_string());
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(header.as_bytes()).await?;
-        return Ok(());
+        return send_response(stream, "200 OK", "application/json; charset=utf-8", body.as_bytes()).await;
     }
 
     // 4. Profile request: /sessionserver/session/minecraft/profile/<uuid> or /session/minecraft/profile/<uuid>
@@ -262,50 +242,58 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
 
         // Check if this is one of our local accounts with a custom skin
         if let Some(json_body) = build_profile_response(uuid_str, port).await {
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                json_body.len(),
-                json_body
-            );
-            stream.write_all(header.as_bytes()).await?;
-            return Ok(());
+            return send_response(stream, "200 OK", "application/json; charset=utf-8", json_body.as_bytes()).await;
         }
 
         // For other players on the server, check Mojang session server so official players keep their skins
         if let Some(mojang_body) = fetch_mojang_profile(uuid_str).await {
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                mojang_body.len(),
-                mojang_body
-            );
-            stream.write_all(header.as_bytes()).await?;
-            return Ok(());
+            return send_response(stream, "200 OK", "application/json; charset=utf-8", mojang_body.as_bytes()).await;
         }
 
         // Offline / unknown player: return 204 No Content -> vanilla Minecraft renders default Steve/Alex
-        let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        stream.write_all(response.as_bytes()).await?;
-        return Ok(());
+        return send_no_content(stream).await;
     }
 
-    // 5. Texture request: /textures/<id>.png
-    if let Some(texture_raw) = path.strip_prefix("/textures/") {
+    // 5. Texture request: /textures/<id>.png or /texture/<id>
+    let texture_opt = path
+        .strip_prefix("/textures/")
+        .or_else(|| path.strip_prefix("/texture/"));
+
+    if let Some(texture_raw) = texture_opt {
         let texture_id = texture_raw.trim_matches('/').trim_end_matches(".png");
         if let Some(png_bytes) = load_skin_png(texture_id).await {
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                png_bytes.len()
-            );
-            stream.write_all(header.as_bytes()).await?;
-            if method == "GET" {
-                stream.write_all(&png_bytes).await?;
-            }
-            return Ok(());
+            let body_to_send = if method == "HEAD" { &[][..] } else { &png_bytes[..] };
+            return send_response(stream, "200 OK", "image/png", body_to_send).await;
         }
     }
 
+    send_no_content(stream).await
+}
+
+async fn send_response(
+    mut stream: TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), std::io::Error> {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    if !body.is_empty() {
+        stream.write_all(body).await?;
+    }
+    let _ = stream.flush().await;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+async fn send_no_content(mut stream: TcpStream) -> Result<(), std::io::Error> {
     let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     stream.write_all(response.as_bytes()).await?;
+    let _ = stream.flush().await;
+    let _ = stream.shutdown().await;
     Ok(())
 }
 
@@ -332,53 +320,32 @@ pub fn to_undashed_uuid(s: &str) -> String {
 async fn find_skin_path(uuid_or_name: &str) -> Option<PathBuf> {
     let dashed = to_dashed_uuid(uuid_or_name);
     let undashed = to_undashed_uuid(uuid_or_name);
+    let lower = uuid_or_name.to_lowercase();
 
-    if let Ok(p) = skin_file_path(&dashed)
-        && p.exists()
-    {
-        return Some(p);
-    }
-    if let Ok(p) = skin_file_path(&undashed)
-        && p.exists()
-    {
-        return Some(p);
-    }
-    if let Ok(p) = skin_file_path(uuid_or_name)
-        && p.exists()
-    {
-        return Some(p);
-    }
+    let mut keys = vec![dashed.clone(), undashed.clone(), lower.clone(), uuid_or_name.to_string()];
 
     if let Some(accounts) = REGISTERED_ACCOUNTS.get() {
         let read = accounts.read();
         if let Some(reg) = read
             .get(&dashed)
             .or_else(|| read.get(&undashed))
-            .or_else(|| read.get(&uuid_or_name.to_lowercase()))
+            .or_else(|| read.get(&lower))
         {
-            if let Ok(p) = skin_file_path(&reg.uuid)
-                && p.exists()
-            {
-                return Some(p);
-            }
-            if let Ok(p) = skin_file_path(&reg.undashed_uuid)
-                && p.exists()
-            {
-                return Some(p);
-            }
-            if let Ok(dir) = skins_dir() {
-                let name_path = dir.join(format!("{}.png", reg.username));
-                if name_path.exists() {
-                    return Some(name_path);
-                }
-            }
+            keys.push(reg.uuid.clone());
+            keys.push(reg.undashed_uuid.clone());
+            keys.push(reg.username.clone());
+            keys.push(reg.username.to_lowercase());
         }
     }
 
-    if let Ok(dir) = skins_dir() {
-        let name_path = dir.join(format!("{uuid_or_name}.png"));
-        if name_path.exists() {
-            return Some(name_path);
+    let search_dirs = oneclient_common::paths::all_skins_dirs();
+
+    for dir in &search_dirs {
+        for key in &keys {
+            let p1 = dir.join(format!("{key}.png"));
+            if p1.is_file() {
+                return Some(p1);
+            }
         }
     }
 
@@ -401,17 +368,21 @@ async fn resolve_username(uuid_input: &str) -> String {
         }
     }
 
-    // Try reading from auth.json
-    if let Ok(auth_p) = oneclient_common::paths::auth_file()
-        && let Ok(content) = polyio::read_to_string(&auth_p).await
-        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
-        && let Some(users) = val.get("users").and_then(|u| u.as_object())
-    {
-        for (id, user) in users {
-            if (id == &dashed || id.replace('-', "").to_lowercase() == undashed)
-                && let Some(name) = user.get("username").and_then(|n| n.as_str())
+    // Try reading from auth.json across all data directory candidates
+    for skin_dir in oneclient_common::paths::all_skins_dirs() {
+        if let Some(data_dir) = skin_dir.parent() {
+            let auth_p = data_dir.join("auth.json");
+            if let Ok(content) = polyio::read_to_string(&auth_p).await
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+                && let Some(users) = val.get("users").and_then(|u| u.as_object())
             {
-                return name.to_string();
+                for (id, user) in users {
+                    if (id == &dashed || id.replace('-', "").to_lowercase() == undashed)
+                        && let Some(name) = user.get("username").and_then(|n| n.as_str())
+                    {
+                        return name.to_string();
+                    }
+                }
             }
         }
     }
@@ -423,13 +394,21 @@ async fn read_skin_metadata(uuid_or_name: &str) -> bool {
     let dashed = to_dashed_uuid(uuid_or_name);
     let undashed = to_undashed_uuid(uuid_or_name);
     let lower = uuid_or_name.to_lowercase();
-    for key in [&dashed, &undashed, &lower] {
-        if let Ok(meta_p) = skin_meta_path(key)
-            && meta_p.exists()
-            && let Ok(s) = polyio::read_to_string(&meta_p).await
-            && let Ok(m) = serde_json::from_str::<SkinMetadata>(&s)
-        {
-            return m.is_slim;
+    let keys = [&dashed, &undashed, &lower, &uuid_or_name.to_string()];
+
+    let search_dirs = oneclient_common::paths::all_skins_dirs();
+
+    for dir in &search_dirs {
+        for key in &keys {
+            for ext in ["json", "meta.json"] {
+                let meta_p = dir.join(format!("{key}.{ext}"));
+                if meta_p.is_file()
+                    && let Ok(s) = polyio::read_to_string(&meta_p).await
+                    && let Ok(m) = serde_json::from_str::<SkinMetadata>(&s)
+                {
+                    return m.is_slim;
+                }
+            }
         }
     }
     false
@@ -523,11 +502,11 @@ pub async fn build_user_properties(uuid_input: &str, port: u16) -> Option<String
 
     let prop_json = if let Some(sig) = sign_sha1_with_rsa(encoded_textures.as_bytes()) {
         format!(
-            r#"{{"textures":[{{"name":"textures","value":"{encoded_textures}","signature":"{sig}"}}]}}"#
+            r#"{{"textures":[{{"value":"{encoded_textures}","signature":"{sig}"}}]}}"#
         )
     } else {
         format!(
-            r#"{{"textures":[{{"name":"textures","value":"{encoded_textures}"}}]}}"#
+            r#"{{"textures":[{{"value":"{encoded_textures}"}}]}}"#
         )
     };
 
@@ -829,7 +808,7 @@ mod tests {
         let test_user = "TestPlayer";
         register_launch_account(test_uuid, test_user);
 
-        if let Ok(dir) = skins_dir() {
+        if let Ok(dir) = oneclient_common::paths::skins_dir() {
             let _ = polyio::create_dir_all(&dir).await;
             let skin_p = dir.join(format!("{test_uuid}.png"));
             // 1x1 png or dummy png

@@ -1,3 +1,7 @@
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
 # Linux and Macos by default have 8MB of stack storage.
 # Windows has 1MB, it isn't enough, so it's changed to 8MB also.
 [target.x86_64-pc-windows-msvc]

@@ -116,6 +116,27 @@ pub fn skins_dir() -> PathsResult<PathBuf> {
     Ok(data_dir()?.join("skins"))
 }
 
+/// Returns all candidate skins directories across current data dir, release, dev, and legacy paths
+pub fn all_skins_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(dir) = skins_dir() {
+        dirs.push(dir);
+    }
+    if let Some(base) = BaseDirs::new() {
+        let data = base.data_dir();
+        for candidate in [
+            data.join("Polyfrost").join("OneClient").join("skins"),
+            data.join("oneclient-dev").join("skins"),
+            data.join("oneclient").join("skins"),
+        ] {
+            if !dirs.contains(&candidate) {
+                dirs.push(candidate);
+            }
+        }
+    }
+    dirs
+}
+
 pub fn skin_file_path(uuid: &str) -> PathsResult<PathBuf> {
     Ok(skins_dir()?.join(format!("{uuid}.png")))
 }

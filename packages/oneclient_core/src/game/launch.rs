@@ -317,7 +317,14 @@ async fn start(
     let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
 
     if account.is_offline() {
-        crate::game::skin_server::disable_incompatible_offline_mods(&[mods_dir.clone(), cwd.join("mods")]).await;
+        let mut scan_dirs = vec![mods_dir.clone(), cwd.join("mods")];
+        if let Ok(shared_mods) = paths::shared_mods_dir() {
+            scan_dirs.push(shared_mods);
+        }
+        if let Ok(shared_mc) = paths::shared_minecraft_dir() {
+            scan_dirs.push(shared_mc.join("mods"));
+        }
+        crate::game::skin_server::disable_incompatible_offline_mods(&scan_dirs).await;
         if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric
             && version.id == "1.21.11"
         {
@@ -423,11 +430,17 @@ async fn start(
         && let Some(user_props) =
             crate::game::skin_server::build_user_properties(&account.id.to_string(), port).await
     {
+        let mut replaced = false;
         for i in 0..mc_args.len() {
-            if mc_args[i] == "--userProperties" && i + 1 < mc_args.len() && mc_args[i + 1] == "{}" {
-                mc_args[i + 1] = user_props;
+            if mc_args[i] == "--userProperties" && i + 1 < mc_args.len() {
+                mc_args[i + 1] = user_props.clone();
+                replaced = true;
                 break;
             }
+        }
+        if !replaced {
+            mc_args.push("--userProperties".to_string());
+            mc_args.push(user_props);
         }
     }
     arguments::append_profile_game_arguments(
