@@ -6,6 +6,8 @@ forked from [OneLauncher](https://github.com/Polyfrost/OneLauncher) allowing for
 
 </div>
 
+## download from [**Releases Page**](https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked/releases).
+
 yes the actual client performs normally aswell
 
 > [!WARNING]
