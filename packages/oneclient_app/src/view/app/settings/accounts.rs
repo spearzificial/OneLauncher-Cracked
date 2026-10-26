@@ -304,7 +304,7 @@ fn hero(
                                     Button::new()
                                         .secondary()
                                         .on_press(|_| {
-                                            let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                                            let _ = freya::router::RouterContext::get().push(crate::Route::Wardrobe {});
                                         })
                                         .child(Icon::new(IconType::Colors).size(16.))
                                         .text("Change Skin"),
@@ -686,7 +686,7 @@ impl Component for AccountRow {
                     .tooltip("Change Skin")
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
-                        let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                        let _ = freya::router::RouterContext::get().push(crate::Route::Wardrobe {});
                     })
                     .child(
                         Icon::new(IconType::Colors)

@@ -493,7 +493,6 @@ async fn start(
             backend.as_str().to_string(),
         ]);
     }
-    }
     arguments::append_profile_game_arguments(
         &mut mc_args,
         profile.force_fullscreen,
