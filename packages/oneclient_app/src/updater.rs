@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use oneclient_events::{Choice, EventBus, Prompt};
 use uuid::Uuid;
 
-use crate::constants::FORGEJO_API_LATEST_RELEASE;
+use crate::constants::{FORGEJO_API_LATEST_RELEASE, RELEASES_URL};
 
 pub const UPDATE_CHOICE_INSTALL: &str = "update.install";
 
@@ -177,13 +177,7 @@ async fn run_check(auto_install: bool, events: EventBus) -> anyhow::Result<()> {
 
     if !can_self_update() {
         tracing::info!("install is not self-updatable in-place; notifying with release URL");
-        events
-            .notify("Update available")
-            .body(format!(
-                "OneLauncher-Cracked {} is available. Download from {}",
-                release.tag_name, release.html_url
-            ))
-            .send();
+        notify_manual_update(&events, &release.tag_name);
         return Ok(());
     }
 
@@ -193,6 +187,24 @@ async fn run_check(auto_install: bool, events: EventBus) -> anyhow::Result<()> {
     }
 
     download_and_install_forgejo(release, events).await
+}
+
+fn notify_manual_update(events: &EventBus, version: &str) {
+    events
+        .notify("Update available")
+        .body(format!(
+            "OneClient {version} is available. Download the latest package from {RELEASES_URL} to update."
+        ))
+        .link(RELEASES_URL)
+        .send();
+}
+
+/// Debug-only shows the notify-only toast that non-self-updatable installs get
+pub fn simulate_manual_update_toast() {
+    match crate::launcher::state() {
+        Ok(state) => notify_manual_update(&state.services.events, "9999.9999.9999"),
+        Err(err) => tracing::warn!("simulated update toast failed: {err:#}"),
+    }
 }
 
 fn can_self_update() -> bool {
