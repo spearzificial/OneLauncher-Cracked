@@ -1,8 +1,11 @@
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use freya::prelude::*;
 
+use crate::i18n::{t, tf};
 use crate::theme;
+use crate::theme::{rounded, text_size};
 
 pub fn border_all(width: f32) -> Border {
     Border::new()
@@ -32,12 +35,12 @@ pub fn note(message: String, accent: Color) -> Element {
         .content(Content::Flex)
         .spacing(10.)
         .padding(Gaps::new_symmetric(12., 14.))
-        .corner_radius(CornerRadius::new_all(10.))
+        .corner_radius(rounded(10.))
         .background(accent.with_a(30))
         .child(
             label()
                 .text(message)
-                .font_size(12.)
+                .font_size(text_size(12.))
                 .max_lines(5)
                 .width(Size::flex(1.0))
                 .color(theme::colors::fg_primary()),
@@ -54,20 +57,20 @@ pub fn path_block(caption: &'static str, path: &std::path::Path) -> Element {
         .child(
             label()
                 .text(caption)
-                .font_size(11.)
+                .font_size(text_size(11.))
                 .color(theme::colors::fg_secondary()),
         )
         .child(
             rect()
                 .width(Size::fill())
                 .padding(Gaps::new_all(10.))
-                .corner_radius(CornerRadius::new_all(8.))
+                .corner_radius(rounded(8.))
                 .background(theme::colors::component_bg())
                 .border(border_all_color(1., theme::colors::component_border()))
                 .child(
                     label()
                         .text(path.display().to_string())
-                        .font_size(12.)
+                        .font_size(text_size(12.))
                         .max_lines(3)
                         .width(Size::fill())
                         .color(theme::colors::fg_primary()),
@@ -80,53 +83,62 @@ pub fn fmt_date(ts: chrono::DateTime<chrono::Utc>) -> String {
     ts.format("%Y-%m-%d %H:%M").to_string()
 }
 
+pub fn fmt_local_datetime(ts: chrono::DateTime<chrono::FixedOffset>) -> String {
+    static LOCALE: LazyLock<chrono::Locale> = LazyLock::new(|| {
+        sys_locale::get_locale()
+            .and_then(|code| chrono::Locale::try_from(code.replace('-', "_").as_str()).ok())
+            .unwrap_or(chrono::Locale::en_US)
+    });
+
+    ts.with_timezone(&chrono::Local)
+        .format_localized("%x %X", *LOCALE)
+        .to_string()
+}
+
 /// Shortest band is a minute nothing re-renders on a timer so a seconds counter
 /// would freeze at whatever it read when the row was drawn
 pub fn relative_time(created_at: Instant) -> String {
     let secs = created_at.elapsed().as_secs();
     match secs {
-        0..=59 => "Just now".to_string(),
-        60..=3599 => format!("{}m ago", secs / 60),
-        3600..=86_399 => format!("{}h ago", secs / 3600),
-        _ => format!("{}d ago", secs / 86_400),
+        0..=59 => t("oneclient.ui.relative_time.just_now").to_string(),
+        60..=3599 => tf("oneclient.ui.relative_time.minutes", &[&(secs / 60)]),
+        3600..=86_399 => tf("oneclient.ui.relative_time.hours", &[&(secs / 3600)]),
+        _ => tf("oneclient.ui.relative_time.days", &[&(secs / 86_400)]),
     }
+}
+
+pub fn relative_since(at: chrono::DateTime<chrono::Utc>) -> String {
+    let elapsed = (chrono::Utc::now() - at).to_std().unwrap_or_default();
+    relative_time(Instant::now().checked_sub(elapsed).unwrap_or_else(Instant::now))
 }
 
 pub fn last_played_label(ts: Option<chrono::DateTime<chrono::Utc>>) -> String {
     let Some(ts) = ts else {
-        return "Never".to_string();
+        return t("oneclient.ui.last_played.never").to_string();
     };
     match (chrono::Utc::now() - ts).num_days() {
-        ..=0 => "Today".to_string(),
-        1 => "Yesterday".to_string(),
-        d @ 2..=6 => format!("{d} days ago"),
-        d @ 7..=13 => format!("{} week ago", d / 7),
-        d @ 14..=29 => format!("{} weeks ago", d / 7),
-        d @ 30..=59 => format!("{} month ago", d / 30),
-        d => format!("{} months ago", d / 30),
+        ..=0 => t("oneclient.ui.last_played.today").to_string(),
+        1 => t("oneclient.ui.last_played.yesterday").to_string(),
+        d @ 2..=6 => tf("oneclient.ui.last_played.days", &[&d]),
+        d @ 7..=13 => tf("oneclient.ui.last_played.weeks.one", &[&(d / 7)]),
+        d @ 14..=29 => tf("oneclient.ui.last_played.weeks.other", &[&(d / 7)]),
+        d @ 30..=59 => tf("oneclient.ui.last_played.months.one", &[&(d / 30)]),
+        d => tf("oneclient.ui.last_played.months.other", &[&(d / 30)]),
     }
 }
 
 /// Gap the clamped menu keeps from the window edges
 pub const EDGE_MARGIN: f32 = 8.;
 
-/// `root_size` is physical while the press position is logical, so it has to be
-/// scaled down before the two are compared
 pub fn clamp_to_window(x: f32, y: f32, width: f32, height: f32) -> (f32, f32) {
-    let platform = Platform::get();
-    let scale = *platform.scale_factor.peek() as f32;
-    if scale <= 0. {
-        return (x, y);
-    }
-
-    let window = *platform.root_size.peek();
+    let window = window_logical_size();
     let clamp = |pos: f32, len: f32, limit: f32| {
         pos.clamp(EDGE_MARGIN, (limit - len - EDGE_MARGIN).max(EDGE_MARGIN))
     };
 
     (
-        clamp(x, width, window.width / scale),
-        clamp(y, height, window.height / scale),
+        clamp(x, width, window.width),
+        clamp(y, height, window.height),
     )
 }
 
@@ -146,7 +158,7 @@ pub fn centered_note(text: &str) -> Element {
         .child(
             label()
                 .text(text.to_string())
-                .font_size(14.)
+                .font_size(text_size(14.))
                 .color(theme::colors::fg_secondary()),
         )
         .into_element()
@@ -271,12 +283,5 @@ impl ImageFallbackExt for ImageViewer {
 }
 
 pub fn window_logical_size() -> Size2D {
-    let platform = Platform::get();
-    let scale = *platform.scale_factor.peek() as f32;
-    let size = *platform.root_size.peek();
-    if scale <= 0. {
-        return size;
-    }
-
-    Size2D::new(size.width / scale, size.height / scale)
+    *Platform::get().current_window().root_size.peek()
 }

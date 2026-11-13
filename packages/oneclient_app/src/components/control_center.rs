@@ -1,18 +1,18 @@
-use freya::{
-    animation::{AnimNum, Ease, OnCreation, use_animation},
-    prelude::*,
-    router::RouterContext,
-};
+use freya::{prelude::*, router::RouterContext};
 
 use crate::{
     Route,
-    components::{Avatar, Button, Icon, IconType, OVERLAY_MAX_LEVEL, OverlayPopup},
+    components::{
+        Avatar, Button, Icon, IconType, OVERLAY_MAX_LEVEL, OverlayPopup, popup_surface,
+        use_popup_intro,
+    },
     hooks::{
         RemoveAccountKeys, query_error, query_is_loading, try_accounts, try_default_account,
         use_accounts, use_control_center_open, use_current_account, use_dispatch,
         use_remove_account, use_settings_snapshot,
     },
-    theme::colors,
+    i18n::{t, tf},
+    theme::{colors, counterpart, rounded, system_aware, text_size},
     ui::{border_all_color, divider},
 };
 
@@ -43,35 +43,10 @@ struct ControlPanel;
 
 impl Component for ControlPanel {
     fn render(&self) -> impl IntoElement {
-        let intro = use_animation(|conf| {
-            conf.on_creation(OnCreation::Run);
-            AnimNum::new(0., 1.).time(200).ease(Ease::Out)
-        });
-        let progress = intro.read().value();
-
-        rect()
-            .vertical()
+        popup_surface(use_popup_intro())
             .width(Size::px(PANEL_WIDTH))
             .padding(Gaps::new_all(12.))
             .spacing(10.)
-            .opacity(progress)
-            .margin(Gaps::new((1.0 - progress) * -8.0, 0., 0., 0.))
-            .background(colors::page_elevated().with_a(220))
-            .backdrop_blur(12.)
-            .corner_radius(CornerRadius::new_all(14.))
-            .border(
-                Border::new()
-                    .fill(colors::component_border())
-                    .width(1.)
-                    .alignment(BorderAlignment::Inner),
-            )
-            .shadow(Shadow::from((
-                0.,
-                8.,
-                32.,
-                0.,
-                Color::from_argb(120, 0, 0, 0),
-            )))
             .child(AccountHeader)
             .child(divider())
             .child(
@@ -81,16 +56,18 @@ impl Component for ControlPanel {
                     .spacing(2.)
                     .child(NavRow {
                         icon: IconType::BarChartSquare02,
-                        row_label: "Stats",
+                        row_label: t("oneclient.components.control_center.stats"),
                         target: Route::Stats {},
                     })
                     .child(NavRow {
                         icon: IconType::Settings02,
-                        row_label: "Settings",
+                        row_label: t("oneclient.components.control_center.settings"),
                         target: Route::SettingsLauncher {},
                     }),
             )
-            .child(section_label("QUICK SETTINGS"))
+            .child(section_label(t(
+                "oneclient.components.control_center.quick_settings",
+            )))
             .child(QuickSettings)
             .child(divider())
             .child(PanelFooter)
@@ -100,7 +77,7 @@ impl Component for ControlPanel {
 fn section_label(text: &'static str) -> impl IntoElement {
     label()
         .text(text)
-        .font_size(11.)
+        .font_size(text_size(11.))
         .letter_spacing(0.8)
         .font_weight(FontWeight::SEMI_BOLD)
         .color(colors::fg_secondary())
@@ -135,15 +112,17 @@ impl Component for AccountHeader {
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
         let username = match account.as_ref() {
             Some(account) => account.username.clone(),
-            None if loading => "Loading…".to_string(),
-            None => "Not signed in".to_string(),
+            None if loading => t("oneclient.components.control_center.loading").to_string(),
+            None => t("oneclient.components.control_center.not_signed_in").to_string(),
         };
         let subtitle = match (account.as_ref(), unusable) {
-            (_, true) => "Microsoft Account required",
-            (Some(account), false) if account.is_microsoft() => "Microsoft account",
-            (Some(_), false) => "Offline account",
-            (None, false) if loading => "Checking accounts",
-            (None, false) => "No account selected",
+            (_, true) => t("oneclient.components.control_center.microsoft_required"),
+            (Some(account), false) if account.is_microsoft() => {
+                t("oneclient.components.control_center.microsoft_account")
+            }
+            (Some(_), false) => t("oneclient.components.control_center.offline_account"),
+            (None, false) if loading => t("oneclient.components.control_center.checking_accounts"),
+            (None, false) => t("oneclient.components.control_center.no_account"),
         };
         let subtitle_color = if unusable {
             colors::danger()
@@ -152,7 +131,11 @@ impl Component for AccountHeader {
         };
 
         let signed_out = account.is_none() && !loading;
-        let action_label = if signed_out { "Sign In" } else { "Switch" };
+        let action_label = if signed_out {
+            t("oneclient.components.control_center.sign_in")
+        } else {
+            t("oneclient.components.control_center.switch")
+        };
         let open_switcher = move |_| {
             dispatch.close_control_center();
             if signed_out {
@@ -178,7 +161,7 @@ impl Component for AccountHeader {
                     .child(
                         label()
                             .text(username)
-                            .font_size(16.)
+                            .font_size(text_size(16.))
                             .font_weight(FontWeight::MEDIUM)
                             .max_lines(1)
                             .color(colors::fg_primary()),
@@ -186,7 +169,7 @@ impl Component for AccountHeader {
                     .child(
                         label()
                             .text(subtitle)
-                            .font_size(12.)
+                            .font_size(text_size(12.))
                             .max_lines(1)
                             .color(subtitle_color),
                     ),
@@ -197,7 +180,7 @@ impl Component for AccountHeader {
                     .cross_align(Alignment::Center)
                     .spacing(6.)
                     .padding(Gaps::new_symmetric(6., 8.))
-                    .corner_radius(CornerRadius::new_all(8.))
+                    .corner_radius(rounded(8.))
                     .background(Color::RED.with_a(0))
                     .maybe(*hovered.read(), |el| {
                         el.background(colors::ghost_overlay_hover())
@@ -210,7 +193,7 @@ impl Component for AccountHeader {
                     .child(
                         label()
                             .text(action_label)
-                            .font_size(13.)
+                            .font_size(text_size(13.))
                             .color(colors::fg_secondary()),
                     )
                     .child(
@@ -248,7 +231,7 @@ impl Component for NavRow {
             .cross_align(Alignment::Center)
             .spacing(12.)
             .padding(Gaps::new_symmetric(0., 8.))
-            .corner_radius(CornerRadius::new_all(8.))
+            .corner_radius(rounded(8.))
             .background(Color::RED.with_a(0))
             .maybe(*hovered.read(), |el| {
                 el.background(colors::ghost_overlay_hover())
@@ -262,7 +245,7 @@ impl Component for NavRow {
             .child(
                 label()
                     .text(self.row_label)
-                    .font_size(15.)
+                    .font_size(text_size(15.))
                     .width(Size::flex(1.0))
                     .color(colors::fg_primary()),
             )
@@ -290,14 +273,39 @@ impl Component for QuickSettings {
             }
         };
 
+        let system_dark =
+            *Platform::get().current_window().preferred_theme.read() == PreferredTheme::Dark;
+        let active = system_aware(&settings.theme, system_dark);
+        let flipped = counterpart(&active);
+        let dark_on = !colors::active_theme().colors.light;
+
         rect()
             .horizontal()
             .width(Size::fill())
             .content(Content::Flex)
             .spacing(8.)
             .child(
-                QuickTile::new(IconType::Discord, "Discord RPC", discord_on)
-                    .on_press(toggle_discord),
+                QuickTile {
+                    enabled: flipped.is_some(),
+                    ..QuickTile::new(
+                        IconType::Moon01,
+                        t("oneclient.components.control_center.dark_mode"),
+                        dark_on,
+                    )
+                }
+                .on_press(move |_| {
+                    if let Some(id) = flipped.clone() {
+                        dispatch.edit_settings(|s| s.theme = id);
+                    }
+                }),
+            )
+            .child(
+                QuickTile::new(
+                    IconType::Discord,
+                    t("oneclient.components.control_center.discord_rpc"),
+                    discord_on,
+                )
+                .on_press(toggle_discord),
             )
     }
 }
@@ -382,7 +390,7 @@ impl Component for QuickTile {
             .cross_align(Alignment::Center)
             .spacing(10.)
             .padding(Gaps::new_symmetric(0., 12.))
-            .corner_radius(CornerRadius::new_all(10.))
+            .corner_radius(rounded(10.))
             .background(background)
             .maybe(!enabled, |el| el.opacity(0.45))
             .maybe(!on || !enabled, |el| {
@@ -408,15 +416,19 @@ impl Component for QuickTile {
                     .child(
                         label()
                             .text(self.title)
-                            .font_size(12.)
+                            .font_size(text_size(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .max_lines(1)
                             .color(title_color),
                     )
                     .child(
                         label()
-                            .text(if on { "On" } else { "Off" })
-                            .font_size(11.)
+                            .text(if on {
+                                t("oneclient.common.on")
+                            } else {
+                                t("oneclient.common.off")
+                            })
+                            .font_size(text_size(11.))
                             .color(sub_color),
                     ),
             )
@@ -465,7 +477,7 @@ impl Component for PanelFooter {
                     .child(
                         footer_action(
                             IconType::Folder,
-                            "Open launcher folder",
+                            t("oneclient.components.control_center.open_folder"),
                             colors::fg_primary(),
                         )
                         .on_press(move |_| {
@@ -480,7 +492,7 @@ impl Component for PanelFooter {
                         el.child(
                             footer_action(
                                 IconType::LogOut01,
-                                "Sign out",
+                                t("oneclient.components.control_center.sign_out"),
                                 colors::fg_primary(),
                             )
                             .on_press(move |_| confirming.set(true)),
@@ -504,7 +516,7 @@ impl Component for PanelFooter {
                                         .max_width(Size::window_percent(90.))
                                         .spacing(14.)
                                         .padding(Gaps::new_all(20.))
-                                        .corner_radius(CornerRadius::new_all(14.))
+                                        .corner_radius(rounded(14.))
                                         .background(colors::page_elevated())
                                         .border(border_all_color(
                                             1.,
@@ -522,18 +534,21 @@ impl Component for PanelFooter {
                                                 )
                                                 .child(
                                                     label()
-                                                        .text("Sign out?")
-                                                        .font_size(16.)
+                                                        .text(t(
+                                                            "oneclient.components.control_center.sign_out_confirm.title",
+                                                        ))
+                                                        .font_size(text_size(16.))
                                                         .font_weight(FontWeight::SEMI_BOLD)
                                                         .color(colors::fg_primary()),
                                                 ),
                                         )
                                         .child(
                                             label()
-                                                .text(format!(
-                                                    "{username} will be removed from OneClient. You will need to sign in again to use this account."
+                                                .text(tf(
+                                                    "oneclient.components.control_center.sign_out_confirm.body",
+                                                    &[&username],
                                                 ))
-                                                .font_size(12.)
+                                                .font_size(text_size(12.))
                                                 .max_lines(4)
                                                 .width(Size::fill())
                                                 .color(colors::fg_secondary()),
@@ -547,7 +562,7 @@ impl Component for PanelFooter {
                                                 .child(
                                                     Button::new()
                                                         .secondary()
-                                                        .text("Cancel")
+                                                        .text(t("oneclient.common.cancel"))
                                                         .on_press(move |_| {
                                                             confirming.set(false)
                                                         }),
@@ -555,7 +570,9 @@ impl Component for PanelFooter {
                                                 .child(
                                                     Button::new()
                                                         .danger()
-                                                        .text("Sign out")
+                                                        .text(t(
+                                                            "oneclient.components.control_center.sign_out",
+                                                        ))
                                                         .on_press(confirm_sign_out),
                                                 ),
                                         ),
@@ -606,7 +623,7 @@ impl Component for FooterAction {
             .spacing(8.)
             .height(Size::px(34.))
             .padding(Gaps::new_symmetric(0., 8.))
-            .corner_radius(CornerRadius::new_all(8.))
+            .corner_radius(rounded(8.))
             .background(Color::RED.with_a(0))
             .maybe(*hovered.read(), |el| {
                 el.background(colors::ghost_overlay_hover())
@@ -620,7 +637,7 @@ impl Component for FooterAction {
             .child(
                 label()
                     .text(self.text)
-                    .font_size(13.)
+                    .font_size(text_size(13.))
                     .max_lines(1)
                     .color(self.color),
             )

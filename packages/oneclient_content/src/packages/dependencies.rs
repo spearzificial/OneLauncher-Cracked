@@ -1,13 +1,15 @@
 use std::collections::{HashSet, VecDeque};
 
 use oneclient_common::domain::{ContentType, GameLoader, ProviderId};
+use oneclient_db::dao::artifact as artifact_dao;
 use oneclient_db::models::ClusterRow;
 use oneclient_events::VersionRange;
 
 use crate::ctx::ContentCtx;
 use crate::error::ContentResult;
+use crate::packages::local_manifest::read_jar_mod_id;
 use crate::packages::provider::PackageProvider;
-use crate::packages::store::PackageStore;
+use crate::packages::store::{PackageStore, artifact_absolute_path};
 use crate::packages::types::{
     DependencyKind, ProjectDetail, ReleaseType, SearchFilters, VersionDependency, VersionDetail,
     VersionSummary,
@@ -17,6 +19,8 @@ use crate::packages::types::{
 const MAX_DEPTH: usize = 4;
 
 const VERSION_WINDOW: usize = 50;
+
+const PRERELEASE_TAGS: [&str; 6] = ["alpha", "beta", "rc", "pre", "snapshot", "dev"];
 
 #[derive(Debug, Clone)]
 pub struct ResolvedDependency {
@@ -57,6 +61,9 @@ pub async fn resolve_required(
     let mut seen = installed_project_ids(provider_id, cluster_id, ctx).await?;
     seen.insert(root.project_id.clone());
 
+    // Read only once something fails to resolve, it opens every jar in the cluster
+    let mut installed_mod_ids: Option<HashSet<String>> = None;
+
     let mut queue: VecDeque<(VersionDependency, usize)> = root
         .dependencies
         .iter()
@@ -74,13 +81,21 @@ pub async fn resolve_required(
         let resolved = match resolve_one(provider, &dep, &cluster, ctx).await {
             Ok(Some(resolved)) => resolved,
             Ok(None) => {
-                tracing::warn!(?dep, "no compatible version for dependency");
-                resolution.unresolved.push(dependency_label(&dep));
+                if !installed_under_mod_id(provider, &dep, cluster_id, &mut installed_mod_ids, ctx)
+                    .await
+                {
+                    tracing::warn!(?dep, "no compatible version for dependency");
+                    resolution.unresolved.push(dependency_label(&dep));
+                }
                 continue;
             }
             Err(err) => {
-                tracing::warn!(?dep, %err, "failed to resolve dependency");
-                resolution.unresolved.push(dependency_label(&dep));
+                if !installed_under_mod_id(provider, &dep, cluster_id, &mut installed_mod_ids, ctx)
+                    .await
+                {
+                    tracing::warn!(?dep, %err, "failed to resolve dependency");
+                    resolution.unresolved.push(dependency_label(&dep));
+                }
                 continue;
             }
         };
@@ -246,13 +261,47 @@ fn numeric_parts(text: &str) -> Option<Vec<u64>> {
     parts.filter(|parts| !parts.is_empty())
 }
 
-fn release_number(version: &str, mc_version: &str) -> Option<Vec<u64>> {
-    version
+fn prerelease_identifiers(token: &str) -> Option<Vec<String>> {
+    let lowered = token.to_ascii_lowercase();
+    PRERELEASE_TAGS
+        .iter()
+        .any(|tag| lowered.starts_with(tag))
+        .then(|| {
+            lowered
+                .split('.')
+                .flat_map(|part| {
+                    let (tag, number) = part.split_at(
+                        part.find(|c: char| c.is_ascii_digit())
+                            .unwrap_or(part.len()),
+                    );
+                    [tag, number]
+                })
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Release {
+    core: Vec<u64>,
+    prerelease: Option<Vec<String>>,
+}
+
+fn release_number(version: &str, mc_version: &str) -> Option<Release> {
+    let mut tokens = version
         .split(['+', '-', '_', ' '])
         .filter(|token| !token.is_empty())
         .filter(|token| !token.to_ascii_lowercase().starts_with("mc"))
-        .filter(|token| *token != mc_version)
-        .find_map(numeric_parts)
+        .filter(|token| *token != mc_version);
+
+    let core = tokens.by_ref().find_map(numeric_parts)?;
+    let prerelease = match tokens.next() {
+        Some(token) => prerelease_identifiers(token),
+        None => version.ends_with('-').then(Vec::new),
+    };
+
+    Some(Release { core, prerelease })
 }
 
 fn compare_parts(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
@@ -261,6 +310,30 @@ fn compare_parts(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
         .map(|index| a.get(index).unwrap_or(&0).cmp(b.get(index).unwrap_or(&0)))
         .find(|ordering| ordering.is_ne())
         .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn compare_prereleases(a: &[String], b: &[String]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            (Ok(_), Err(_)) => Ordering::Less,
+            (Err(_), Ok(_)) => Ordering::Greater,
+            (Err(_), Err(_)) => a.cmp(b),
+        })
+        .find(|ordering| ordering.is_ne())
+        .unwrap_or_else(|| a.len().cmp(&b.len()))
+}
+
+fn compare_releases(a: &Release, b: &Release) -> std::cmp::Ordering {
+    compare_parts(&a.core, &b.core).then_with(|| match (&a.prerelease, &b.prerelease) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(a), Some(b)) => compare_prereleases(a, b),
+    })
 }
 
 fn satisfies(range: &VersionRange, version: &str, mc_version: &str) -> bool {
@@ -272,14 +345,14 @@ fn satisfies(range: &VersionRange, version: &str, mc_version: &str) -> bool {
         |bound: &Option<String>| bound.as_deref().and_then(|bound| release_number(bound, ""));
 
     if let Some(min) = bound(&range.min) {
-        let ordering = compare_parts(&found, &min);
+        let ordering = compare_releases(&found, &min);
         if ordering.is_lt() || (ordering.is_eq() && !range.min_inclusive) {
             return false;
         }
     }
 
     if let Some(max) = bound(&range.max) {
-        let ordering = compare_parts(&found, &max);
+        let ordering = compare_releases(&found, &max);
         if ordering.is_gt() || (ordering.is_eq() && !range.max_inclusive) {
             return false;
         }
@@ -421,6 +494,57 @@ async fn installed_project_ids(
         .filter(|linked| linked.provider == Some(provider_id))
         .filter_map(|linked| linked.project_id)
         .collect())
+}
+
+/// Bundles can ship a library from outside the provider, like Fabric Language Kotlin on 1.8.9
+/// which comes from GitHub because Modrinth has no build for it. The project id check can't see
+/// that copy, so a dependency the provider can't serve is also matched by its slug against the
+/// mod ids of the jars already in the cluster
+async fn installed_under_mod_id(
+    provider: &dyn PackageProvider,
+    dep: &VersionDependency,
+    cluster_id: i64,
+    installed: &mut Option<HashSet<String>>,
+    ctx: &ContentCtx,
+) -> bool {
+    let Some(project_id) = &dep.project_id else {
+        return false;
+    };
+    let Ok(project) = provider.get_project(project_id, ctx).await else {
+        return false;
+    };
+
+    if installed.is_none() {
+        *installed = Some(installed_mod_ids(cluster_id, ctx).await);
+    }
+    installed
+        .as_ref()
+        .is_some_and(|ids| ids.contains(&project.slug))
+}
+
+async fn installed_mod_ids(cluster_id: i64, ctx: &ContentCtx) -> HashSet<String> {
+    let Ok(linked) = PackageStore::list_linked_artifacts(cluster_id, ctx).await else {
+        return HashSet::new();
+    };
+
+    let mut ids = HashSet::new();
+    for artifact in linked
+        .iter()
+        .filter(|a| a.enabled && a.content_type == ContentType::Mod)
+    {
+        if let Some(id) = artifact_mod_id(&artifact.hash, ctx).await {
+            ids.insert(id);
+        }
+    }
+    ids
+}
+
+pub async fn artifact_mod_id(hash: &str, ctx: &ContentCtx) -> Option<String> {
+    let row = artifact_dao::get_artifact_by_hash(&ctx.db, hash)
+        .await
+        .ok()??;
+    let jar = artifact_absolute_path(&row.path).ok()?;
+    read_jar_mod_id(&jar).await.map(|id| id.id)
 }
 
 /// False for modpacks they bring their own file list
@@ -630,7 +754,11 @@ mod tests {
             ("26.3.0.0.9", vec![26, 3, 0, 0, 9]),
             ("v2.1", vec![2, 1]),
         ] {
-            assert_eq!(release_number(version, "26.3"), Some(expected), "{version}");
+            assert_eq!(
+                release_number(version, "26.3").map(|release| release.core),
+                Some(expected),
+                "{version}"
+            );
         }
 
         assert_eq!(release_number("beta", "26.3"), None);
@@ -661,6 +789,28 @@ mod tests {
     #[test]
     fn an_unreadable_version_never_satisfies_a_range() {
         assert!(!satisfies(&VersionRange::at_least("1.0"), "beta", "26.3"));
+    }
+
+    #[test]
+    fn a_prerelease_sorts_below_its_release() {
+        let at_least = VersionRange::at_least("1.0.0");
+        assert!(!satisfies(&at_least, "1.0.0-beta.1", "26.3"));
+        assert!(!satisfies(&at_least, "mc26.3-1.0.0-rc.2+fabric", "26.3"));
+        assert!(satisfies(&at_least, "1.0.0", "26.3"));
+        assert!(satisfies(&at_least, "1.0.0-fabric", "26.3"));
+        assert!(satisfies(&at_least, "1.0.1-beta.1", "26.3"));
+
+        let beta = VersionRange::at_least("1.0.0-beta.2");
+        assert!(satisfies(&beta, "1.0.0-beta.10", "26.3"));
+        assert!(satisfies(&beta, "1.0.0-rc.1", "26.3"));
+        assert!(!satisfies(&beta, "1.0.0-beta.1", "26.3"));
+        assert!(!satisfies(&beta, "1.0.0-beta", "26.3"));
+
+        assert!(satisfies(
+            &VersionRange::at_least("1.0.0-"),
+            "1.0.0-alpha",
+            "26.3"
+        ));
     }
 
     #[test]

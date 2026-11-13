@@ -1,8 +1,8 @@
 use freya::prelude::*;
 
-use crate::components::{Icon, IconType, ScrollArea};
+use crate::components::{Icon, IconType, ScrollArea, TooltipPlacement, use_tooltip_anchor};
 use crate::hooks::use_overlay_claim_when;
-use crate::theme::colors;
+use crate::theme::{colors, rounded, text_size};
 use crate::ui::{border_all_color, window_logical_size};
 
 const OPTION_HEIGHT: f32 = 28.;
@@ -19,6 +19,7 @@ pub struct Dropdown {
     height: Size,
     outlined: bool,
     checked: Option<Vec<bool>>,
+    tooltip: Option<Box<str>>,
     key: DiffKey,
 }
 
@@ -33,6 +34,7 @@ impl Dropdown {
             height: Size::px(24.),
             outlined: false,
             checked: None,
+            tooltip: None,
             key: DiffKey::None,
         }
     }
@@ -68,10 +70,15 @@ impl Dropdown {
         self.on_select = Some(handler.into());
         self
     }
+
+    pub fn tooltip(mut self, tooltip: impl Into<Box<str>>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
 }
 
 impl KeyExt for Dropdown {
-    fn write_key(&mut self) -> &mut DiffKey {
+    fn key_mut(&mut self) -> &mut DiffKey {
         &mut self.key
     }
 }
@@ -83,6 +90,7 @@ impl Component for Dropdown {
 
         let a11y_id = use_a11y();
         let focus = use_focus(a11y_id);
+        let tooltip = use_tooltip_anchor(self.tooltip.clone(), TooltipPlacement::Top);
 
         let mut button_area = use_state(|| None::<Area>);
         let mut list_area = use_state(|| None::<Area>);
@@ -149,14 +157,15 @@ impl Component for Dropdown {
                 }
             })
             .child(
-                rect()
+                tooltip
+                    .attach(rect())
                     .width(Size::fill())
                     .height(self.height.clone())
                     .horizontal()
                     .center()
                     .spacing(4.)
                     .padding(Gaps::new_symmetric(0., if outlined { 12. } else { 8. }))
-                    .corner_radius(CornerRadius::new_all(if outlined { 8. } else { 6. }))
+                    .corner_radius(rounded(if outlined { 8. } else { 6. }))
                     .background(trigger_bg)
                     .maybe(outlined, |el| {
                         el.main_align(Alignment::SpaceBetween)
@@ -168,8 +177,8 @@ impl Component for Dropdown {
                     .maybe(focus().is_focused(), |el| {
                         el.border(border_all_color(1., colors::brand()))
                     })
-                    .on_pointer_enter(move |_| hovering.set(true))
-                    .on_pointer_leave(move |_| hovering.set(false))
+                    .on_pointer_over(move |_| hovering.set(true))
+                    .on_pointer_out(move |_| hovering.set(false))
                     .on_global_pointer_up(on_global_pointer_up)
                     .on_sized(move |e: Event<SizedEventData>| {
                         button_area.set_if_modified(Some(e.area));
@@ -183,7 +192,7 @@ impl Component for Dropdown {
                     .child(
                         label()
                             .text(selected)
-                            .font_size(if outlined { 13. } else { 12. })
+                            .font_size(text_size(if outlined { 13. } else { 12. }))
                             .color(colors::fg_primary()),
                     )
                     .child(
@@ -207,7 +216,7 @@ impl Component for Dropdown {
                             rect()
                                 .width(Size::fill())
                                 .padding(4.)
-                                .corner_radius(CornerRadius::new_all(8.))
+                                .corner_radius(rounded(8.))
                                 .border(border_all_color(1., colors::component_border()))
                                 .background(colors::page_elevated())
                                 .overflow(Overflow::Clip)
@@ -280,7 +289,7 @@ impl Component for DropdownOption {
             .width(Size::fill())
             .height(Size::px(OPTION_HEIGHT))
             .padding(Gaps::new_symmetric(0., 8.))
-            .corner_radius(CornerRadius::new_all(6.))
+            .corner_radius(rounded(6.))
             .a11y_id(a11y_id)
             .a11y_focusable(true)
             .a11y_role(AccessibilityRole::Button)
@@ -299,7 +308,7 @@ impl Component for DropdownOption {
                 label()
                     .text(self.text.clone())
                     .width(Size::flex(1.))
-                    .font_size(12.)
+                    .font_size(text_size(12.))
                     .color(colors::fg_primary()),
             )
             .maybe_child(self.checked.map(|checked| {

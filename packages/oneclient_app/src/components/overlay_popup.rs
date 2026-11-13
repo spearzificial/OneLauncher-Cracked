@@ -6,9 +6,12 @@ use freya::{
 };
 
 use crate::hooks::use_overlay_claim;
+use crate::theme::{colors, rounded};
 
 const SCRIM_ALPHA: f32 = 90.;
 const SCRIM_MIN_ALPHA: u8 = 1;
+const PANEL_RADIUS_PX: f32 = 14.;
+const PANEL_SLIDE_PX: f32 = 8.;
 
 /// Overlay level of a top level popup. Its scrim sits two levels below it.
 pub const OVERLAY_BASE_LEVEL: u8 = 12;
@@ -26,6 +29,51 @@ thread_local! {
 /// for the topmost overlay has to gate itself on this.
 pub fn overlay_is_topmost(level: u8) -> bool {
     OPEN_LEVELS.with_borrow(|open| open.iter().all(|&other| other <= level))
+}
+
+/// Entry progress of a panel inside an [`OverlayPopup`], for [`popup_surface`].
+pub fn use_popup_intro() -> f32 {
+    let intro = use_animation(|conf| {
+        conf.on_creation(OnCreation::Run);
+        AnimNum::new(0., 1.).time(200).ease(Ease::Out)
+    });
+    intro.read().value()
+}
+
+/// Chrome shared by the panels anchored inside an [`OverlayPopup`]. The caller
+/// owns the size, padding and children.
+pub fn popup_surface(progress: f32) -> Rect {
+    rect()
+        .vertical()
+        .opacity(progress)
+        .margin(Gaps::new((1. - progress) * -PANEL_SLIDE_PX, 0., 0., 0.))
+        .background(colors::page_elevated().with_a(220))
+        .backdrop_blur(12.)
+        .corner_radius(rounded(PANEL_RADIUS_PX))
+        .border(
+            Border::new()
+                .fill(colors::component_border())
+                .width(1.)
+                .alignment(BorderAlignment::Inner),
+        )
+        .shadow(Shadow::from((
+            0.,
+            8.,
+            32.,
+            0.,
+            Color::from_argb(120, 0, 0, 0),
+        )))
+}
+
+pub fn use_open_level(level: u8) {
+    use_hook(move || OPEN_LEVELS.with_borrow_mut(|open| open.push(level)));
+    use_drop(move || {
+        OPEN_LEVELS.with_borrow_mut(|open| {
+            if let Some(pos) = open.iter().rposition(|&other| other == level) {
+                open.remove(pos);
+            }
+        });
+    });
 }
 
 #[derive(PartialEq)]
@@ -82,13 +130,13 @@ impl OverlayPopup {
 }
 
 impl ChildrenExt for OverlayPopup {
-    fn get_children(&mut self) -> &mut Vec<Element> {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
         &mut self.children
     }
 }
 
 impl KeyExt for OverlayPopup {
-    fn write_key(&mut self) -> &mut DiffKey {
+    fn key_mut(&mut self) -> &mut DiffKey {
         &mut self.key
     }
 }
@@ -102,14 +150,7 @@ impl Component for OverlayPopup {
         let key_close = self.on_close.clone();
         let level = self.overlay_level;
 
-        use_hook(move || OPEN_LEVELS.with_borrow_mut(|open| open.push(level)));
-        use_drop(move || {
-            OPEN_LEVELS.with_borrow_mut(|open| {
-                if let Some(pos) = open.iter().rposition(|&other| other == level) {
-                    open.remove(pos);
-                }
-            });
-        });
+        use_open_level(level);
 
         let fade = use_animation(|conf| {
             conf.on_creation(OnCreation::Run);

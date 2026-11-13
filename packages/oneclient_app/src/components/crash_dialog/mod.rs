@@ -1,16 +1,21 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use freya::prelude::*;
 use freya::router::*;
 
+use oneclient_cluster::logs::cluster_output_log;
 use oneclient_common::constants::DISCORD_URL;
 use oneclient_events::{CrashFix, CrashRemedy, GameCrash};
 
 use crate::Route;
+use crate::components::upload_mclogs::UploadToMclogs;
 use crate::components::{Button, Icon, IconType, OVERLAY_BASE_LEVEL, OverlayPopup, ScrollArea};
-use crate::hooks::{use_dispatch, use_link_confirm};
+use crate::hooks::{use_cluster, use_dispatch, use_link_confirm, use_log_action, use_upload_log};
+use crate::view::app::cluster::logs::{Confirm, confirm_overlay};
+use crate::i18n::{t, tf};
 use crate::theme;
-use crate::theme::colors;
+use crate::theme::{colors, rounded, text_size};
 use crate::utils::format_durations;
 
 mod markup;
@@ -52,8 +57,6 @@ const EXCERPT_LINE_H: f32 = 17.;
 const SUSPECT_HINT_H: f32 = 16.;
 const SUSPECT_MAX_LINES: f32 = 2.;
 
-const SUSPECT_HINT: &str = "Named in the crash report. Try removing or updating them first.";
-
 #[derive(PartialEq)]
 pub struct CrashDialog {
     pub crash: Arc<GameCrash>,
@@ -65,6 +68,12 @@ impl Component for CrashDialog {
         let cluster_id = crash.cluster_id;
         let dispatch = use_dispatch();
         let confirm = use_link_confirm();
+        let upload = use_upload_log();
+        let action = use_log_action();
+        let upload_confirm = use_state(|| None::<Confirm>);
+
+        let log_path =
+            use_cluster(cluster_id).and_then(|cluster| cluster_output_log(&cluster).ok());
 
         let close = dispatch.clone();
         let outside_close = dispatch.clone();
@@ -87,7 +96,7 @@ impl Component for CrashDialog {
                             .content(Content::Flex)
                             .overflow(Overflow::Clip)
                             .background(colors::page_elevated())
-                            .corner_radius(CornerRadius::new_all(16.))
+                            .corner_radius(rounded(16.))
                             .padding(Gaps::new_all(DIALOG_PADDING))
                             .spacing(DIALOG_SPACING)
                             .border(crate::ui::border_all_color(1., colors::component_border()))
@@ -96,8 +105,15 @@ impl Component for CrashDialog {
                             .child(subtitle(&crash))
                             .child(body(&crash, confirm))
                             .child(discord_card(confirm))
-                            .child(actions(&crash, dispatch)),
+                            .child(actions(&crash, dispatch, log_path.clone(), upload_confirm)),
                     ),
+            )
+            .maybe_child(
+                (*upload_confirm.read())
+                    .zip(log_path)
+                    .map(|(kind, path)| {
+                        confirm_overlay(kind, upload_confirm, action, upload, path).into_element()
+                    }),
             )
     }
 }
@@ -115,7 +131,7 @@ fn header(crash: &GameCrash) -> impl IntoElement {
         .child(
             label()
                 .text(crash.title.clone())
-                .font_size(18.)
+                .font_size(text_size(18.))
                 .font_weight(FontWeight::SEMI_BOLD)
                 .width(Size::fill())
                 .max_lines(2)
@@ -129,15 +145,15 @@ fn subtitle(crash: &GameCrash) -> impl IntoElement {
         parts.push(crash.exit.clone());
     }
     if crash.played_secs > 0 {
-        parts.push(format!(
-            "after {}",
-            format_durations(crash.played_secs as i64)
+        parts.push(tf(
+            "oneclient.components.crash_dialog.played_for",
+            &[&format_durations(crash.played_secs as i64)],
         ));
     }
 
     label()
         .text(parts.join("  ·  "))
-        .font_size(12.)
+        .font_size(text_size(12.))
         .width(Size::fill())
         .max_lines(2)
         .color(colors::fg_secondary())
@@ -281,7 +297,7 @@ fn card() -> Rect {
         .vertical()
         .width(Size::fill())
         .padding(Gaps::new_all(CARD_PADDING))
-        .corner_radius(CornerRadius::new_all(8.))
+        .corner_radius(rounded(8.))
         .background(colors::component_bg())
         .border(crate::ui::border_all_color(1., colors::component_border()))
 }
@@ -308,7 +324,7 @@ fn cause_card(cause: &str) -> Element {
         .child(
             label()
                 .text(cause.to_string())
-                .font_size(13.)
+                .font_size(text_size(13.))
                 .width(Size::fill())
                 .color(colors::fg_primary()),
         )
@@ -320,23 +336,23 @@ fn suspects_card(crash: &GameCrash) -> Element {
         .spacing(CARD_SPACING)
         .child(
             label()
-                .text("SUSPECTED MODS")
-                .font_size(10.)
+                .text(t("oneclient.components.crash_dialog.suspects.title"))
+                .font_size(text_size(10.))
                 .font_weight(FontWeight::SEMI_BOLD)
                 .color(colors::danger()),
         )
         .child(
             label()
                 .text(crash.suspects.join(", "))
-                .font_size(13.)
+                .font_size(text_size(13.))
                 .width(Size::fill())
                 .max_lines(SUSPECT_MAX_LINES as usize)
                 .color(colors::fg_primary()),
         )
         .child(
             label()
-                .text(SUSPECT_HINT)
-                .font_size(11.)
+                .text(t("oneclient.components.crash_dialog.suspects.hint"))
+                .font_size(text_size(11.))
                 .width(Size::fill())
                 .max_lines(1)
                 .color(colors::fg_secondary()),
@@ -361,8 +377,11 @@ fn fixes_section(crash: &GameCrash, confirm: State<Option<String>>) -> Element {
         .spacing(FIXES_SPACING)
         .child(
             label()
-                .text(format!("{} suggestions", cards.len()))
-                .font_size(11.)
+                .text(tf(
+                    "oneclient.components.crash_dialog.suggestions",
+                    &[&cards.len()],
+                ))
+                .font_size(text_size(11.))
                 .font_weight(FontWeight::SEMI_BOLD)
                 .color(colors::fg_secondary()),
         )
@@ -376,8 +395,8 @@ fn fix_card(fix: &CrashFix, game_dir: Option<&str>, confirm: State<Option<String
 
     let mut fix = card().spacing(CARD_SPACING).child(
         label()
-            .text(fix.kind.to_uppercase())
-            .font_size(10.)
+            .text(fix.kind.clone())
+            .font_size(text_size(10.))
             .font_weight(FontWeight::SEMI_BOLD)
             .color(colors::brand()),
     );
@@ -422,15 +441,15 @@ fn fix_line(line: &str, content_w: f32) -> Element {
         .width(Size::px(content_w))
         .height(Size::px(FIX_LINE_H))
         .max_lines(1)
-        .font_size(13.);
+        .font_size(text_size(13.));
 
     for segment in segments(line) {
         let span = Span::new(segment.text);
         text = text.span(match segment.style {
             SegmentStyle::Plain => span.color(colors::fg_primary()),
             SegmentStyle::Code => span
-                .font_family(theme::MONO_FONT)
-                .font_size(12.)
+                .font_family(theme::mono_font())
+                .font_size(text_size(12.))
                 .color(colors::code_info()),
             SegmentStyle::Link => span
                 .color(colors::code_info())
@@ -460,7 +479,7 @@ fn discord_card(mut confirm: State<Option<String>>) -> impl IntoElement {
         .spacing(12.)
         .content(Content::Flex)
         .padding(Gaps::new_all(14.))
-        .corner_radius(CornerRadius::new_all(10.))
+        .corner_radius(rounded(10.))
         .background(DISCORD_BG)
         .border(crate::ui::border_all_color(1., DISCORD_BORDER))
         .child(
@@ -475,8 +494,8 @@ fn discord_card(mut confirm: State<Option<String>>) -> impl IntoElement {
                 .spacing(2.)
                 .child(
                     label()
-                        .text("Still stuck? Ask us on Discord")
-                        .font_size(14.)
+                        .text(t("oneclient.components.crash_dialog.discord.title"))
+                        .font_size(text_size(14.))
                         .font_weight(FontWeight::SEMI_BOLD)
                         .max_lines(1)
                         .width(Size::fill())
@@ -484,8 +503,8 @@ fn discord_card(mut confirm: State<Option<String>>) -> impl IntoElement {
                 )
                 .child(
                     label()
-                        .text("Copy the crash details and we will help you fix it.")
-                        .font_size(12.)
+                        .text(t("oneclient.components.crash_dialog.discord.body"))
+                        .font_size(text_size(12.))
                         .max_lines(1)
                         .width(Size::fill())
                         .color(colors::fg_secondary()),
@@ -496,7 +515,7 @@ fn discord_card(mut confirm: State<Option<String>>) -> impl IntoElement {
                 .primary()
                 .on_press(move |_| confirm.set(Some(DISCORD_URL.to_string())))
                 .child(Icon::new(IconType::LinkExternal01).size(14.))
-                .text("Join Discord"),
+                .text(t("oneclient.components.crash_dialog.discord.join")),
         )
 }
 
@@ -514,8 +533,8 @@ fn excerpt_box(crash: &GameCrash) -> Element {
         .map(|line| {
             label()
                 .text(line)
-                .font_family(theme::MONO_FONT)
-                .font_size(12.)
+                .font_family(theme::mono_font())
+                .font_size(text_size(12.))
                 .width(Size::px(content_w))
                 .max_lines(1)
                 .color(colors::fg_primary())
@@ -525,7 +544,7 @@ fn excerpt_box(crash: &GameCrash) -> Element {
 
     clip_box(height)
         .background(colors::page())
-        .corner_radius(CornerRadius::new_all(8.))
+        .corner_radius(rounded(8.))
         .padding(Gaps::new_all(CARD_PADDING))
         .child(
             ScrollArea::new()
@@ -538,7 +557,12 @@ fn excerpt_box(crash: &GameCrash) -> Element {
         .into_element()
 }
 
-fn actions(crash: &GameCrash, dispatch: crate::Actions) -> impl IntoElement {
+fn actions(
+    crash: &GameCrash,
+    dispatch: crate::Actions,
+    log_path: Option<PathBuf>,
+    upload_confirm: State<Option<Confirm>>,
+) -> impl IntoElement {
     let cluster_id = crash.cluster_id;
     let close = dispatch.clone();
 
@@ -548,6 +572,7 @@ fn actions(crash: &GameCrash, dispatch: crate::Actions) -> impl IntoElement {
         .main_align(Alignment::End)
         .cross_align(Alignment::Center)
         .spacing(10.)
+        .child(UploadToMclogs::new(log_path, upload_confirm))
         .child(logs_button(cluster_id, dispatch.clone()));
 
     if let Some(remedy) = crash.remedy {
@@ -558,7 +583,7 @@ fn actions(crash: &GameCrash, dispatch: crate::Actions) -> impl IntoElement {
         Button::new()
             .ghost()
             .on_press(move |_| close.dismiss_game_crash(cluster_id))
-            .text("Close"),
+            .text(t("oneclient.common.close")),
     )
 }
 
@@ -570,7 +595,7 @@ fn logs_button(cluster_id: i64, dispatch: crate::Actions) -> impl IntoElement {
             let _ = RouterContext::get().push(Route::ClusterLogs { cluster_id });
         })
         .child(Icon::new(IconType::Terminal).size(14.))
-        .text("View logs")
+        .text(t("oneclient.components.crash_dialog.view_logs"))
 }
 
 fn remedy_button(

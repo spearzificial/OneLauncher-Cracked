@@ -7,8 +7,9 @@ pub use onboarding_navbar::OnboardingNavbar;
 use freya::prelude::*;
 
 use crate::components::{Button, Icon, IconType};
+use crate::i18n::t;
 
-pub(super) fn navbar_button(foreground: Option<Color>) -> Button {
+pub(crate) fn navbar_button(foreground: Option<Color>) -> Button {
     Button::new()
         .ghost()
         .foreground(foreground)
@@ -18,10 +19,15 @@ pub(super) fn navbar_button(foreground: Option<Color>) -> Button {
 }
 
 pub fn window_controls() -> impl IntoElement {
-    window_controls_with(None)
+    window_controls_with(None, close_launcher)
 }
 
-pub fn window_controls_with(foreground: Option<Color>) -> impl IntoElement {
+pub(crate) fn close_launcher() {
+    crate::view::chat::close_chat_window();
+    crate::platform::close();
+}
+
+pub fn window_controls_with(foreground: Option<Color>, on_close: fn()) -> impl IntoElement {
     let minimize = |_| {
         Platform::get().with_window(Platform::window_id(), |win| {
             win.set_minimized(true);
@@ -34,7 +40,7 @@ pub fn window_controls_with(foreground: Option<Color>) -> impl IntoElement {
         });
     };
 
-    let close = |_| crate::platform::close();
+    let close = move |_| on_close();
 
     rect()
         .horizontal()
@@ -44,19 +50,19 @@ pub fn window_controls_with(foreground: Option<Color>) -> impl IntoElement {
         .layer(Layer::OverlayLevel(15))
         .child(
             navbar_button(foreground)
-                .tooltip("Minimize")
+                .tooltip(t("oneclient.components.navbar.minimize"))
                 .child(Icon::new(IconType::Minus))
                 .on_press(minimize),
         )
         .child(
             navbar_button(foreground)
-                .tooltip("Maximize")
+                .tooltip(t("oneclient.components.navbar.maximize"))
                 .child(Icon::new(IconType::Maximize01).size(20.))
                 .on_press(maximize),
         )
         .child(
             navbar_button(foreground)
-                .tooltip("Close")
+                .tooltip(t("oneclient.common.close"))
                 .child(Icon::new(IconType::X))
                 .on_press(close),
         )

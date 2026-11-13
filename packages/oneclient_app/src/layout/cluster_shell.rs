@@ -7,14 +7,19 @@ use crate::components::{Button, Icon, IconType, TabBar, TabItem};
 use crate::hooks::{
     use_bisect, use_cluster, use_dispatch, use_game_snapshot, use_launcher, use_version_metadata,
 };
+use crate::i18n::t;
 use crate::routes::Route;
-use crate::theme::colors;
+use crate::theme::{colors, text_size};
 use crate::ui::entrance_motion_layer;
+use crate::view::app::ExportInstanceModal;
 use crate::view::app::{launch_button_state, launch_syncing, use_shared_dir_taken};
 
 const HEADER_HEIGHT: f32 = 64.;
 const TABS_HEIGHT: f32 = 38.;
 const BAR_SPACING: f32 = 16.;
+/// Launch button height; the icon buttons beside it are squares of the same size
+const ACTION_HEIGHT: f32 = 40.;
+const ACTION_ICON_SIZE: f32 = 20.;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum ClusterViewShellTab {
@@ -33,16 +38,16 @@ pub enum ClusterViewShellTab {
 impl ClusterViewShellTab {
     fn label(&self) -> &'static str {
         match self {
-            Self::Overview => "Overview",
-            Self::Logs => "Logs",
-            Self::GameLog => "Live Log",
-            Self::Screenshots => "Screenshots",
-            Self::Mods => "Mods",
-            Self::Shaders => "Shaders",
-            Self::Textures => "Textures",
-            Self::Worlds => "Worlds",
-            Self::DataPacks => "Data packs",
-            Self::Settings => "Settings",
+            Self::Overview => t("oneclient.layout.cluster.tab.overview"),
+            Self::Logs => t("oneclient.layout.cluster.tab.logs"),
+            Self::GameLog => t("oneclient.layout.cluster.tab.live_log"),
+            Self::Screenshots => t("oneclient.layout.cluster.tab.screenshots"),
+            Self::Mods => t("oneclient.layout.cluster.tab.mods"),
+            Self::Shaders => t("oneclient.layout.cluster.tab.shaders"),
+            Self::Textures => t("oneclient.layout.cluster.tab.textures"),
+            Self::Worlds => t("oneclient.layout.cluster.tab.worlds"),
+            Self::DataPacks => t("oneclient.layout.cluster.tab.data_packs"),
+            Self::Settings => t("oneclient.layout.cluster.tab.settings"),
         }
     }
 
@@ -123,6 +128,7 @@ impl Component for ClusterShell {
         let launch_state = launch_button_state(&game, cluster_id, syncing, shared_dir_taken);
         let bisecting = use_bisect(cluster_id).is_some();
         let mut question_hidden = use_state(|| false);
+        let mut sharing = use_state(|| false);
         let open_game_output = use_state(|| false);
         use_hook(move || {
             provide_root_context(crate::view::app::cluster::OpenGameOutput(open_game_output))
@@ -179,6 +185,7 @@ impl Component for ClusterShell {
                 launch_state,
                 game.is_running(cluster_id),
                 cluster.game_dir().ok(),
+                sharing,
             )
             .into_element()
         });
@@ -230,6 +237,12 @@ impl Component for ClusterShell {
                 }
                 .into_element()
             }))
+            .maybe_child(cluster.as_ref().filter(|_| *sharing.read()).map(|cluster| {
+                ExportInstanceModal::new(cluster_id, cluster.name.clone(), move |()| {
+                    sharing.set(false)
+                })
+                .into_element()
+            }))
     }
 }
 
@@ -271,7 +284,7 @@ impl Component for ClusterContentOutlet {
 
         use_side_effect_with_deps(&anim_finished, move |&finished| {
             if finished {
-                Platform::get().send(UserEvent::RequestRedraw);
+                Platform::get().current_window().request_redraw();
             }
         });
 
@@ -296,6 +309,7 @@ impl Component for ClusterContentOutlet {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn cluster_header(
     title: String,
     subtitle: String,
@@ -304,6 +318,7 @@ fn cluster_header(
     launch_state: (&'static str, bool),
     running: bool,
     folder: Option<std::path::PathBuf>,
+    mut sharing: State<bool>,
 ) -> impl IntoElement {
     let (launch_label, launch_enabled) = launch_state;
     let kill_dispatch = dispatch.clone();
@@ -323,14 +338,14 @@ fn cluster_header(
                 .child(
                     label()
                         .text(title)
-                        .font_size(28.)
+                        .font_size(text_size(28.))
                         .font_weight(FontWeight::BOLD)
                         .color(colors::fg_primary()),
                 )
                 .child(
                     label()
                         .text(subtitle)
-                        .font_size(12.)
+                        .font_size(text_size(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .color(colors::fg_secondary()),
                 ),
@@ -340,21 +355,38 @@ fn cluster_header(
                 .horizontal()
                 .cross_align(Alignment::Center)
                 .spacing(10.)
-                .maybe_child(folder.map(crate::components::open_folder_button))
+                .maybe_child(folder.map(|folder| {
+                    crate::components::sized_open_folder_button(folder, ACTION_ICON_SIZE)
+                        .width(Size::px(ACTION_HEIGHT))
+                        .height(Size::px(ACTION_HEIGHT))
+                }))
+                .child(
+                    Button::new()
+                        .secondary()
+                        .icon()
+                        .width(Size::px(ACTION_HEIGHT))
+                        .height(Size::px(ACTION_HEIGHT))
+                        .tooltip(t("oneclient.layout.cluster.share"))
+                        .on_press(move |_| sharing.set(true))
+                        .child(Icon::new(IconType::Share01).size(ACTION_ICON_SIZE)),
+                )
                 .maybe(running, |el| {
                     el.child(
                         Button::new()
                             .danger()
                             .icon()
-                            .tooltip("Stop game")
+                            .width(Size::px(ACTION_HEIGHT))
+                            .height(Size::px(ACTION_HEIGHT))
+                            .tooltip(t("oneclient.layout.cluster.stop_game"))
                             .on_press(move |_| kill_dispatch.kill_cluster(cluster_id))
-                            .child(Icon::new(IconType::Square).size(16.)),
+                            .child(Icon::new(IconType::Square).size(ACTION_ICON_SIZE)),
                     )
                 })
                 .child(
                     Button::new()
                         .primary()
                         .large()
+                        .height(Size::px(ACTION_HEIGHT))
                         .enabled(launch_enabled)
                         .on_press(move |_| {
                             if launch_enabled {
@@ -389,6 +421,9 @@ fn cluster_tabs(
     let tab_items = tabs.into_iter().flatten().map(|tab| {
         let route = tab.route(cluster_id);
         let mut item = TabItem::new(tab.label(), tab == active);
+        if tab == ClusterViewShellTab::GameLog {
+            item = item.accent(colors::brand());
+        }
         if let Some(route) = route {
             item = item.on_press(move |_| {
                 let _ = RouterContext::get().push(route.clone());
@@ -417,7 +452,7 @@ fn cluster_tabs(
                 .width(Size::auto())
                 .height(Size::fill())
                 .spacing(22.)
-                .font_size(13.)
+                .font_size(text_size(13.))
                 .tabs(tab_items),
         )
 }

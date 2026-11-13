@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::FileType;
 use std::path::{Path, PathBuf};
 
@@ -75,7 +75,7 @@ pub async fn materialize_content(
     let global_root = if own_packs {
         cluster_dir.clone()
     } else {
-        paths::shared_minecraft_dir()?
+        paths::cluster_shared_dir(&cluster.folder_name)?
     };
 
     polyio::create_dir_all(game_dir).await.ok();
@@ -100,7 +100,7 @@ pub async fn materialize_content(
         adopt_into_global(game_dir, &global_root).await;
         ensure_global_links(game_dir, &global_root).await;
     } else if !isolated {
-        leave_global_folders(services, cluster, game_dir, false)
+        leave_global_folders(services, cluster, game_dir, None, false)
             .await
             .ok();
     }
@@ -230,7 +230,7 @@ pub async fn materialize_content(
     let mut packs = if own_packs {
         Vec::new()
     } else {
-        desired_global(services, &mut unrestored).await?
+        desired_global(services, cluster, &mut unrestored).await?
     };
     let held_edit_paths: HashSet<String> =
         held_edits.iter().map(|entry| entry.path.clone()).collect();
@@ -362,10 +362,15 @@ pub async fn materialize_content(
 // every enabled pack across every cluster
 async fn desired_global(
     services: &LauncherServices,
+    cluster: &Cluster,
     unrestored: &mut Vec<Unrestored>,
 ) -> LauncherResult<Vec<Desired>> {
     let mut desired = Vec::new();
-    let sharing = oneclient_content::packages::store::sharing_cluster_ids(&services.db).await?;
+    let sharing = oneclient_content::packages::store::sharing_cluster_ids(
+        &services.db,
+        cluster.shared_group().as_deref(),
+    )
+    .await?;
 
     for content_type in GLOBAL_TYPES {
         for row in
@@ -423,9 +428,13 @@ async fn adopt_into_global(own_root: &Path, global_root: &Path) {
         return;
     }
 
-    for content_type in GLOBAL_TYPES {
-        let own = own_root.join(content_type.folder_name());
-        let shared = global_root.join(content_type.folder_name());
+    let folders = GLOBAL_TYPES
+        .map(ContentType::folder_name)
+        .into_iter()
+        .chain([super::folder_packs::STASH_DIR]);
+    for folder in folders {
+        let own = own_root.join(folder);
+        let shared = global_root.join(folder);
 
         match polyio::symlink_metadata(&own).await {
             Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
@@ -509,18 +518,21 @@ pub async fn leave_shared_folder(
     services: &LauncherServices,
     cluster: &Cluster,
     game_dir: &Path,
+    group: Option<&str>,
 ) -> LauncherResult<()> {
     let _mods_sync = lock_mods_sync(cluster.id).await;
-    leave_global_folders(services, cluster, game_dir, true).await
+    leave_global_folders(services, cluster, game_dir, group, true).await
 }
 
 async fn leave_global_folders(
     services: &LauncherServices,
     cluster: &Cluster,
     game_dir: &Path,
+    group: Option<&str>,
     every_type: bool,
 ) -> LauncherResult<()> {
-    let sharing = match oneclient_content::packages::store::sharing_cluster_ids(&services.db).await
+    let sharing = match oneclient_content::packages::store::sharing_cluster_ids(&services.db, group)
+        .await
     {
         Ok(ids) => ids,
         Err(err) => {
@@ -560,7 +572,11 @@ async fn leave_global_folders(
 
 pub async fn join_shared_folder(services: &LauncherServices, cluster: &Cluster) {
     let _mods_sync = lock_mods_sync(cluster.id).await;
-    let sharing = match oneclient_content::packages::store::sharing_cluster_ids(&services.db).await
+    let sharing = match oneclient_content::packages::store::sharing_cluster_ids(
+        &services.db,
+        cluster.shared_group().as_deref(),
+    )
+    .await
     {
         Ok(ids) => ids,
         Err(err) => {
@@ -638,7 +654,7 @@ pub async fn split_dedicated_packs(state: &LauncherState) {
             continue;
         };
         let _mods_sync = lock_mods_sync(cluster.id).await;
-        leave_global_folders(&state.services, &cluster, &dir, false)
+        leave_global_folders(&state.services, &cluster, &dir, None, false)
             .await
             .ok();
     }
@@ -1321,7 +1337,11 @@ async fn disable_globally(
     hash: &str,
     ctx: &oneclient_content::ContentCtx,
 ) -> LauncherResult<()> {
-    let sharing = oneclient_content::packages::store::sharing_cluster_ids(&ctx.db).await?;
+    let sharing = oneclient_content::packages::store::sharing_cluster_ids(
+        &ctx.db,
+        cluster.shared_group().as_deref(),
+    )
+    .await?;
     artifact_dao::set_enabled_for_hash(&ctx.db, hash, 0, &sharing).await?;
     oneclient_content::bundles::on_user_disable_artifact(cluster.id, hash, ctx).await?;
     Ok(())
@@ -1704,6 +1724,8 @@ struct ModCopy {
 pub struct DuplicateMods {
     pub shadowed: HashSet<String>,
     pub outranked: HashSet<String>,
+    /// Hash of the copy the loader uses, to the copies it ignores
+    pub copies: HashMap<String, Vec<String>>,
 }
 
 fn shadowed_bundle_copies(mods: &[ModCopy], loader_picks_newer: bool) -> DuplicateMods {
@@ -1723,12 +1745,21 @@ fn shadowed_bundle_copies(mods: &[ModCopy], loader_picks_newer: bool) -> Duplica
             continue;
         }
 
+        let user_hashes = users.iter().map(|(hash, _)| (*hash).to_owned());
         if loader_picks_newer && users.iter().all(|(_, user)| is_older(user, bundle)) {
+            duplicates.outranked.extend(user_hashes.clone());
             duplicates
-                .outranked
-                .extend(users.iter().map(|(hash, _)| (*hash).to_owned()));
+                .copies
+                .entry(copy.hash.clone())
+                .or_default()
+                .extend(user_hashes);
         } else {
             duplicates.shadowed.insert(copy.hash.clone());
+            let mut user_hashes = user_hashes;
+            let used = user_hashes.next().unwrap_or_default();
+            let ignored = duplicates.copies.entry(used).or_default();
+            ignored.push(copy.hash.clone());
+            ignored.extend(user_hashes);
         }
     }
 
@@ -2144,7 +2175,7 @@ async fn import_manual_content_with(
         };
         dir
     } else {
-        let Ok(dir) = paths::shared_minecraft_dir() else {
+        let Ok(dir) = paths::cluster_shared_dir(&cluster.folder_name) else {
             return failed_mods;
         };
         dir
@@ -2157,7 +2188,12 @@ async fn import_manual_content_with(
     let sharing = if own_packs {
         Vec::new()
     } else {
-        match oneclient_content::packages::store::sharing_cluster_ids(&services.db).await {
+        match oneclient_content::packages::store::sharing_cluster_ids(
+            &services.db,
+            cluster.shared_group().as_deref(),
+        )
+        .await
+        {
             Ok(ids) => ids,
             Err(err) => {
                 tracing::warn!(error = %err, "cannot list the shared clusters; skipping the pack import");
@@ -2391,23 +2427,41 @@ async fn points_into_clusters_dir(path: &Path) -> bool {
     target.starts_with(root)
 }
 
-// drops links a deleted cluster left behind
+// drops links a deleted or moved cluster left behind
 #[tracing::instrument(skip(services), level = "debug")]
 async fn prune_mods_links(services: &LauncherServices) {
-    let Ok(root) = paths::shared_mods_dir() else {
-        return;
-    };
-
-    let Ok(mut entries) = polyio::read_dir(&root).await else {
-        return;
-    };
-
-    let known: HashSet<String> = match cluster_dao::list_all(&services.db).await {
-        Ok(rows) => rows.into_iter().map(|row| row.folder_name).collect(),
+    let rows = match cluster_dao::list_all(&services.db).await {
+        Ok(rows) => rows,
         Err(err) => {
             tracing::warn!(error = %err, "cannot list clusters; leaving shared mods links alone");
             return;
         }
+    };
+    let known: HashSet<PathBuf> = rows
+        .iter()
+        .filter_map(|row| paths::shared_mods_link(&row.folder_name).ok())
+        .collect();
+
+    let mut groups: Vec<Option<String>> = vec![None];
+    if let Ok(dir) = paths::shared_groups_dir()
+        && let Ok(mut entries) = polyio::read_dir(&dir).await
+    {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            groups.push(Some(entry.file_name().to_string_lossy().into_owned()));
+        }
+    }
+
+    for group in groups {
+        let Ok(root) = paths::shared_mods_dir(group.as_deref()) else {
+            continue;
+        };
+        prune_mods_links_in(&root, &known).await;
+    }
+}
+
+async fn prune_mods_links_in(root: &Path, known: &HashSet<PathBuf>) {
+    let Ok(mut entries) = polyio::read_dir(root).await else {
+        return;
     };
 
     while let Ok(Some(entry)) = entries.next_entry().await {
@@ -2419,7 +2473,7 @@ async fn prune_mods_links(services: &LauncherServices) {
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();
-        if known.contains(&name) {
+        if known.contains(&entry.path()) {
             continue;
         }
 
@@ -2428,7 +2482,7 @@ async fn prune_mods_links(services: &LauncherServices) {
         }
 
         match polyio::remove_symlink_dir(entry.path()).await {
-            Ok(()) => tracing::debug!(link = %name, "cleared mods link for a deleted cluster"),
+            Ok(()) => tracing::debug!(link = %name, "cleared a stale cluster mods link"),
             Err(err) => {
                 tracing::warn!(link = %name, error = %err, "failed to clear stale cluster mods link")
             }
@@ -2868,6 +2922,7 @@ mod tests {
             display_version: None,
             provider: None,
             published_at: None,
+            added_at: None,
             seen_status: oneclient_db::models::SeenStatus::Seen,
         }
     }
@@ -3492,6 +3547,30 @@ mod tests {
         assert!(is_note(EMPTY_NOTE_NAME));
         assert!(is_note(LINKS_NOTE_NAME));
         assert!(!is_note("sodium.jar"));
+    }
+
+    #[tokio::test]
+    async fn joining_the_shared_folder_brings_switched_off_folder_packs() {
+        let root = polyio::testing::ScratchDir::new("adopt_stash");
+        let (own, global) = (root.path().join("own"), root.path().join("global"));
+        let stashed = own
+            .join(super::super::folder_packs::STASH_DIR)
+            .join("Faithful");
+        polyio::create_dir_all(&stashed).await.unwrap();
+        polyio::write(stashed.join("pack.mcmeta"), b"{}".as_slice())
+            .await
+            .unwrap();
+
+        adopt_into_global(&own, &global).await;
+
+        assert!(
+            global
+                .join(super::super::folder_packs::STASH_DIR)
+                .join("Faithful")
+                .join("pack.mcmeta")
+                .is_file()
+        );
+        assert!(!stashed.exists());
     }
 
     #[tokio::test]

@@ -2,9 +2,9 @@ mod launcher;
 
 pub mod data_dir;
 
-pub use launcher::{AppTheme, LaunchBehaviour, LauncherSettings, ViewLayout, ViewState};
+pub use launcher::{LaunchBehaviour, LauncherSettings, ViewLayout, ViewState};
 pub use oneclient_cluster::{
-    GameSettingsProfile, GraphicsBackend, PackageUpdateMode, ProfileUpdate, SettingsOsExtra,
+    GameSettingsProfile, PackageUpdateMode, ProfileUpdate, SettingsOsExtra,
 };
 pub use oneclient_common::Resolution;
 
@@ -19,5 +19,6 @@ pub fn net_config(settings: &LauncherSettings) -> oneclient_net::NetConfig {
         settings.modrinth_api_key.as_deref(),
         settings.custom_api_endpoint.as_deref(),
         settings.custom_meta_url_base.as_deref(),
+        settings.custom_plus_endpoint.as_deref(),
     )
 }

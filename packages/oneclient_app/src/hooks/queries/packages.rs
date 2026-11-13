@@ -5,7 +5,7 @@ use freya::query::{Query, QueryCapability, UseQuery, use_query};
 use oneclient_common::domain::GameLoader;
 use oneclient_common::search::normalize_query;
 use oneclient_content::packages::types::{
-    DEFAULT_PAGE_SIZE, Page, ProjectDetail, ProjectSummary, SearchFilters, SearchSort,
+    DEFAULT_PAGE_SIZE, Page, ProjectDetail, ProjectSummary, SearchFilters, SearchSide, SearchSort,
     VersionSummary,
 };
 use oneclient_content::packages::{CachedPackageMeta, ContentType, ProviderId};
@@ -40,6 +40,7 @@ pub struct PackageSearchKeys {
     pub loaders: Vec<GameLoader>,
     pub categories: Vec<String>,
     pub sort: SearchSort,
+    pub side: Option<SearchSide>,
     pub page: usize,
 }
 
@@ -62,6 +63,7 @@ impl QueryCapability for PackageSearchQuery {
                     loaders: (!keys.loaders.is_empty()).then(|| keys.loaders.clone()),
                     categories: (!keys.categories.is_empty()).then(|| keys.categories.clone()),
                     sort: Some(keys.sort),
+                    side: keys.side,
                     offset: Some(keys.page * BROWSE_PAGE_SIZE),
                     limit: Some(BROWSE_PAGE_SIZE),
                 },
@@ -80,6 +82,7 @@ pub fn use_package_search(
     loaders: Vec<GameLoader>,
     categories: Vec<String>,
     sort: SearchSort,
+    side: Option<SearchSide>,
     page: usize,
 ) -> UseQuery<PackageSearchQuery> {
     use_query(Query::new(
@@ -93,6 +96,7 @@ pub fn use_package_search(
             loaders,
             categories,
             sort,
+            side,
             page,
         },
         PackageSearchQuery,
@@ -112,7 +116,7 @@ pub fn search_total(query: &UseQuery<PackageSearchQuery>) -> usize {
 }
 
 pub fn search_pending(query: &UseQuery<PackageSearchQuery>) -> bool {
-    super::state::query_is_busy(query)
+    super::state::query_is_busy(query) && super::state::settled_or_loading(query).is_none()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -181,19 +185,45 @@ impl QueryCapability for PackageMetaBatchQuery {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PackageMetaCachedQuery;
+
+impl QueryCapability for PackageMetaCachedQuery {
+    type Ok = std::collections::HashMap<String, CachedPackageMeta>;
+    type Err = LauncherError;
+    type Keys = PackageMetaBatchKeys;
+
+    async fn run(&self, keys: &Self::Keys) -> Result<Self::Ok, Self::Err> {
+        let state = crate::launcher::state()?;
+        Ok(oneclient_content::packages::read_cached_package_meta(
+            &state.services.content(),
+            keys.provider,
+            &keys.project_ids,
+        )
+        .await)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PackageMetaBatch {
+    cached: UseQuery<PackageMetaCachedQuery>,
+    fetched: UseQuery<PackageMetaBatchQuery>,
+}
+
 pub fn use_package_meta_batch(
     provider: ProviderId,
     mut project_ids: Vec<String>,
-) -> UseQuery<PackageMetaBatchQuery> {
+) -> PackageMetaBatch {
     project_ids.sort();
     project_ids.dedup();
-    use_query(Query::new(
-        PackageMetaBatchKeys {
-            provider,
-            project_ids,
-        },
-        PackageMetaBatchQuery,
-    ))
+    let keys = PackageMetaBatchKeys {
+        provider,
+        project_ids,
+    };
+    PackageMetaBatch {
+        cached: use_query(Query::new(keys.clone(), PackageMetaCachedQuery)),
+        fetched: use_query(Query::new(keys, PackageMetaBatchQuery)),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -251,9 +281,11 @@ pub fn project_web_urls(query: &UseQuery<ProjectWebUrlsQuery>) -> HashMap<String
 }
 
 pub fn package_meta_batch(
-    query: &UseQuery<PackageMetaBatchQuery>,
+    query: &PackageMetaBatch,
 ) -> std::collections::HashMap<String, CachedPackageMeta> {
-    super::state::settled_or_loading(query).unwrap_or_default()
+    super::state::settled_or_loading(&query.fetched)
+        .or_else(|| super::state::settled_or_loading(&query.cached))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

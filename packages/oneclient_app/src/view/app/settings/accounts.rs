@@ -16,7 +16,8 @@ use crate::hooks::{
     use_add_offline_account, use_current_account, use_refresh_account, use_remove_account,
     use_set_default_account,
 };
-use crate::theme::colors;
+use crate::i18n::t;
+use crate::theme::{colors, rounded, text_size};
 use crate::ui::border_all_color;
 
 /// The shader scales the model off `res.y` alone so height makes the player bigger width only needs to clear the arms
@@ -42,8 +43,6 @@ impl Component for SettingsAccounts {
         let mut username = use_state(String::new);
         let mut show_offline = use_state(|| false);
         let mut closing_offline = use_state(|| false);
-        let edit_account = use_state(|| None::<(Uuid, String)>);
-        let edit_name = use_state(String::new);
 
         use_side_effect(move || {
             if !*closing_offline.read() {
@@ -96,8 +95,6 @@ impl Component for SettingsAccounts {
                     remove,
                     refresh,
                     sign_in: msa.clone(),
-                    edit_account,
-                    edit_name,
                 }
                 .into_element()
             })
@@ -118,7 +115,9 @@ impl Component for SettingsAccounts {
                     move |_| msa.start()
                 },
             ))
-            .child(section_header("YOUR ACCOUNTS"))
+            .child(section_header(t(
+                "oneclient.settings.accounts.section.your_accounts",
+            )))
             .children(rows)
             .maybe_child(show_offline.read().then(|| {
                 offline_dialog(
@@ -129,78 +128,6 @@ impl Component for SettingsAccounts {
                     show_offline,
                 )
             }))
-            .maybe_child(edit_account.read().as_ref().map(|(id, _)| {
-                let id = *id;
-                let mut edit_account = edit_account;
-                OverlayPopup::new()
-                    .on_close(move |()| edit_account.set(None))
-                    .child(
-                        rect()
-                            .width(Size::window_percent(100.))
-                            .height(Size::window_percent(100.))
-                            .center()
-                            .child(
-                                rect()
-                                    .vertical()
-                                    .width(Size::px(380.))
-                                    .max_width(Size::window_percent(90.))
-                                    .spacing(16.)
-                                    .padding(Gaps::new_all(20.))
-                                    .corner_radius(CornerRadius::new_all(16.))
-                                    .background(colors::page_elevated())
-                                    .border(border_all_color(1., colors::component_border()))
-                                    .child(
-                                        label()
-                                            .text("Edit offline username")
-                                            .font_size(18.)
-                                            .font_weight(FontWeight::SEMI_BOLD)
-                                            .color(colors::fg_primary()),
-                                    )
-                                    .child(
-                                        rect()
-                                            .vertical()
-                                            .width(Size::fill())
-                                            .spacing(6.)
-                                            .child(field_label("New Username"))
-                                            .child(TextInput::new(edit_name).placeholder("Enter new username")),
-                                    )
-                                    .child(
-                                        rect()
-                                            .horizontal()
-                                            .width(Size::fill())
-                                            .main_align(Alignment::End)
-                                            .spacing(8.)
-                                            .child(
-                                                Button::new()
-                                                    .ghost()
-                                                    .on_press(move |_| edit_account.set(None))
-                                                    .text("Cancel"),
-                                            )
-                                            .child(
-                                                Button::new()
-                                                    .primary()
-                                                    .on_press(move |_| {
-                                                        let new_name = edit_name.peek().trim().to_string();
-                                                        if !new_name.is_empty() {
-                                                            let mut edit_account = edit_account;
-                                                            spawn(async move {
-                                                                if let Ok(state) = crate::launcher::state() {
-                                                                    let _ = state.auth.remove_account(id).await;
-                                                                    if let Ok(new_acc) = state.auth.add_offline_account(new_name).await {
-                                                                        let _ = state.auth.set_default_account(Some(new_acc.id)).await;
-                                                                        crate::hooks::invalidate_auth_queries(Some(new_acc.id)).await;
-                                                                    }
-                                                                }
-                                                                edit_account.set(None);
-                                                            });
-                                                        }
-                                                    })
-                                                    .text("Save"),
-                                            ),
-                                    ),
-                            ),
-                    )
-            }))
             .maybe_child(msa.popup())
             .into_element()
     }
@@ -208,7 +135,7 @@ impl Component for SettingsAccounts {
 
 fn hero(
     account: Option<MinecraftAccount>,
-    _has_microsoft: bool,
+    has_microsoft: bool,
     microsoft_pending: bool,
     error: Option<String>,
     on_open_offline: impl FnMut(Event<PressEventData>) + 'static,
@@ -217,12 +144,12 @@ fn hero(
     let (name, subtitle) = match &account {
         Some(account) if account.needs_sign_in() => (
             account.username.clone(),
-            "Signed out. Sign in again to play",
+            t("oneclient.settings.accounts.hero.signed_out"),
         ),
         Some(account) => (account.username.clone(), kind_label(account.kind)),
         None => (
-            "No active account".to_string(),
-            "Add an account to start playing",
+            t("oneclient.settings.accounts.hero.no_account").to_string(),
+            t("oneclient.settings.accounts.hero.no_account_hint"),
         ),
     };
 
@@ -233,7 +160,7 @@ fn hero(
         .cross_align(Alignment::Center)
         .spacing(16.)
         .padding(Gaps::new_all(16.))
-        .corner_radius(CornerRadius::new_all(12.))
+        .corner_radius(rounded(12.))
         .background(colors::page_elevated())
         .child(model_frame(account.as_ref().map(|account| account.id)))
         .child(
@@ -248,15 +175,15 @@ fn hero(
                         .spacing(2.)
                         .child(
                             label()
-                                .text("ACTIVE ACCOUNT")
-                                .font_size(11.)
+                                .text(t("oneclient.settings.accounts.hero.active_account"))
+                                .font_size(text_size(11.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .color(colors::fg_secondary()),
                         )
                         .child(
                             label()
                                 .text(name)
-                                .font_size(24.)
+                                .font_size(text_size(24.))
                                 .font_weight(FontWeight::SEMI_BOLD)
                                 .max_lines(1)
                                 .color(colors::fg_primary()),
@@ -264,7 +191,7 @@ fn hero(
                         .child(
                             label()
                                 .text(subtitle)
-                                .font_size(12.)
+                                .font_size(text_size(12.))
                                 .color(colors::fg_secondary()),
                         ),
                 )
@@ -287,37 +214,27 @@ fn hero(
                                         .on_press(on_add_microsoft)
                                         .child(Icon::new(IconType::Globe01).size(16.))
                                         .text(if microsoft_pending {
-                                            "Signing in..."
+                                            t("oneclient.settings.accounts.signing_in")
                                         } else {
-                                            "Add Microsoft"
+                                            t("oneclient.settings.accounts.add_microsoft")
                                         }),
                                 )
                                 .child(
                                     Button::new()
                                         .secondary()
-                                        .enabled(true)
+                                        .enabled(has_microsoft)
                                         .on_press(on_open_offline)
                                         .child(Icon::new(IconType::Plus).size(16.))
-                                        .text("Add offline"),
-                                )
-                                .child(
-                                    Button::new()
-                                        .secondary()
-                                        .on_press(|_| {
-                                            let _ = freya::router::RouterContext::get().push(crate::Route::Wardrobe {});
-                                        })
-                                        .child(Icon::new(IconType::Colors).size(16.))
-                                        .text("Change Skin"),
+                                        .text(t("oneclient.settings.accounts.add_offline")),
                                 ),
                         )
                         .map(error, |el, msg| {
                             el.child(hint_line(IconType::AlertTriangle, msg, colors::danger()))
                         })
-                        .maybe(false, |el| {
+                        .maybe(!has_microsoft, |el| {
                             el.child(hint_line(
                                 IconType::InfoCircle,
-                                "Add a Microsoft account before creating offline accounts."
-                                    .to_string(),
+                                t("oneclient.settings.accounts.microsoft_required").to_string(),
                                 colors::fg_secondary(),
                             ))
                         }),
@@ -337,7 +254,7 @@ fn model_frame(id: Option<Uuid>) -> impl IntoElement {
                 .height(Size::px(MODEL_HEIGHT_PX))
                 .center()
                 .overflow(Overflow::Clip)
-                .corner_radius(CornerRadius::new_all(12.))
+                .corner_radius(rounded(12.))
                 .background(colors::component_bg())
                 .border(border_all_color(1., colors::component_border()))
                 .child(match id {
@@ -354,8 +271,8 @@ fn model_frame(id: Option<Uuid>) -> impl IntoElement {
         )
         .maybe_child(id.map(|_| {
             label()
-                .text("Drag to rotate")
-                .font_size(10.)
+                .text(t("oneclient.settings.accounts.drag_to_rotate"))
+                .font_size(text_size(10.))
                 .color(colors::fg_secondary())
                 .into_element()
         }))
@@ -397,13 +314,13 @@ fn offline_dialog(
                         .max_width(Size::window_percent(90.))
                         .spacing(16.)
                         .padding(Gaps::new_all(20.))
-                        .corner_radius(CornerRadius::new_all(16.))
+                        .corner_radius(rounded(16.))
                         .background(colors::page_elevated())
                         .border(border_all_color(1., colors::component_border()))
                         .child(
                             label()
-                                .text("Add offline account")
-                                .font_size(18.)
+                                .text(t("oneclient.settings.accounts.offline.title"))
+                                .font_size(text_size(18.))
                                 .font_weight(FontWeight::SEMI_BOLD)
                                 .color(colors::fg_primary()),
                         )
@@ -412,8 +329,12 @@ fn offline_dialog(
                                 .vertical()
                                 .width(Size::fill())
                                 .spacing(6.)
-                                .child(field_label("Username"))
-                                .child(TextInput::new(username).placeholder("Offline username")),
+                                .child(field_label(t(
+                                    "oneclient.settings.accounts.offline.username",
+                                )))
+                                .child(TextInput::new(username).placeholder(t(
+                                    "oneclient.settings.accounts.offline.username_placeholder",
+                                ))),
                         )
                         .child(
                             rect()
@@ -424,7 +345,7 @@ fn offline_dialog(
                                 .child(
                                     label()
                                         .text(uuid_preview.unwrap_or_else(|| "-".to_string()))
-                                        .font_size(12.)
+                                        .font_size(text_size(12.))
                                         .color(colors::fg_secondary()),
                                 ),
                         )
@@ -441,14 +362,14 @@ fn offline_dialog(
                                     Button::new()
                                         .ghost()
                                         .on_press(move |_| show_offline.set(false))
-                                        .text("Cancel"),
+                                        .text(t("oneclient.common.cancel")),
                                 )
                                 .child(
                                     Button::new()
                                         .primary()
                                         .on_press(on_confirm)
                                         .child(Icon::new(IconType::Plus).size(16.))
-                                        .text("Add account"),
+                                        .text(t("oneclient.settings.accounts.offline.confirm")),
                                 ),
                         ),
                 ),
@@ -459,7 +380,7 @@ fn offline_dialog(
 fn field_label(text: &str) -> impl IntoElement {
     label()
         .text(text.to_string())
-        .font_size(11.)
+        .font_size(text_size(11.))
         .font_weight(FontWeight::MEDIUM)
         .color(colors::fg_secondary())
         .into_element()
@@ -477,7 +398,7 @@ fn hint_line(icon: IconType, text: String, color: Color) -> impl IntoElement {
         .child(
             label()
                 .text(text)
-                .font_size(12.)
+                .font_size(text_size(12.))
                 .width(Size::flex(1.0))
                 .color(color),
         )
@@ -502,8 +423,6 @@ struct AccountRow {
     remove: crate::hooks::UseRemoveAccount,
     refresh: crate::hooks::UseRefreshAccount,
     sign_in: MicrosoftLogin,
-    edit_account: State<Option<(Uuid, String)>>,
-    edit_name: State<String>,
 }
 
 impl PartialEq for AccountRow {
@@ -515,8 +434,6 @@ impl PartialEq for AccountRow {
             && self.signed_out == other.signed_out
             && self.is_default == other.is_default
             && self.sign_in.pending == other.sign_in.pending
-            && self.edit_account == other.edit_account
-            && self.edit_name == other.edit_name
     }
 }
 
@@ -581,7 +498,7 @@ impl Component for AccountRow {
             .content(Content::Flex)
             .spacing(12.)
             .padding(Gaps::new_all(12.))
-            .corner_radius(CornerRadius::new_all(12.))
+            .corner_radius(rounded(12.))
             .background(colors::page_elevated())
             .border(border_all_color(1., border_color))
             .opacity(if is_refreshing {
@@ -614,7 +531,7 @@ impl Component for AccountRow {
                             .child(
                                 label()
                                     .text(self.username.clone())
-                                    .font_size(15.)
+                                    .font_size(text_size(15.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .max_lines(1)
                                     .color(colors::fg_primary()),
@@ -627,11 +544,11 @@ impl Component for AccountRow {
                     .child(
                         label()
                             .text(if signed_out {
-                                "Session expired. Sign in again to use this account".to_string()
+                                t("oneclient.settings.accounts.session_expired").to_string()
                             } else {
                                 format!("{} · {id}", kind_label(self.kind))
                             })
-                            .font_size(11.)
+                            .font_size(text_size(11.))
                             .max_lines(1)
                             .color(colors::fg_secondary()),
                     ),
@@ -641,20 +558,24 @@ impl Component for AccountRow {
                 Button::new()
                     .secondary()
                     .enabled(!pending)
-                    .tooltip("Sign in to this Microsoft account again")
+                    .tooltip(t("oneclient.settings.accounts.sign_in_again"))
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         sign_in.start();
                     })
                     .child(Icon::new(IconType::Globe01).size(16.))
-                    .text(if pending { "Signing in..." } else { "Sign in" })
+                    .text(if pending {
+                        t("oneclient.settings.accounts.signing_in")
+                    } else {
+                        t("oneclient.settings.accounts.sign_in")
+                    })
                     .into_element()
             }))
             .maybe_child((is_microsoft && !signed_out).then(|| {
                 Button::new()
                     .ghost()
                     .icon()
-                    .tooltip("Refresh this account")
+                    .tooltip(t("oneclient.settings.accounts.refresh"))
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         if *refreshing.peek() {
@@ -683,48 +604,19 @@ impl Component for AccountRow {
                 Button::new()
                     .ghost()
                     .icon()
-                    .tooltip("Change Skin")
-                    .on_press(move |e: Event<PressEventData>| {
-                        e.stop_propagation();
-                        let _ = freya::router::RouterContext::get().push(crate::Route::Wardrobe {});
-                    })
-                    .child(
-                        Icon::new(IconType::Colors)
-                            .size(18.)
-                            .color(colors::fg_primary()),
-                    ),
-            )
-            .child({
-                let is_offline = !is_microsoft;
-                let mut edit_acc_state = self.edit_account;
-                let mut edit_name_state = self.edit_name;
-                let username_val = self.username.clone();
-                let id_val = self.id;
-                Button::new()
-                    .ghost()
-                    .icon()
-                    .enabled(is_offline)
-                    .tooltip("Edit username")
-                    .on_press(move |e: Event<PressEventData>| {
-                        e.stop_propagation();
-                        edit_name_state.set(username_val.clone());
-                        edit_acc_state.set(Some((id_val, username_val.clone())));
-                    })
+                    .enabled(false)
+                    .tooltip(t("oneclient.common.edit"))
                     .child(
                         Icon::new(IconType::Pencil01)
                             .size(18.)
-                            .color(if is_offline {
-                                colors::fg_primary()
-                            } else {
-                                colors::fg_secondary()
-                            }),
-                    )
-            })
+                            .color(colors::fg_secondary()),
+                    ),
+            )
             .child(
                 Button::new()
                     .ghost()
                     .icon()
-                    .tooltip("Remove account")
+                    .tooltip(t("oneclient.settings.accounts.remove"))
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         remove.mutate(RemoveAccountKeys { id });
@@ -742,7 +634,7 @@ impl Component for AccountRow {
 fn kind_label(kind: AccountKind) -> &'static str {
     match kind {
         AccountKind::Microsoft => "Microsoft",
-        AccountKind::Offline => "Offline",
+        AccountKind::Offline => t("oneclient.settings.accounts.kind.offline"),
     }
 }
 
@@ -752,7 +644,7 @@ fn default_badge() -> impl IntoElement {
             .size(12.)
             .color(colors::brand())
             .into_element(),
-        "Default".to_string(),
+        t("oneclient.common.default").to_string(),
         colors::brand(),
         colors::brand(),
     )
@@ -764,7 +656,7 @@ fn expired_badge() -> impl IntoElement {
             .size(12.)
             .color(colors::danger())
             .into_element(),
-        "Expired".to_string(),
+        t("oneclient.settings.accounts.badge.expired").to_string(),
         colors::danger(),
         colors::danger(),
     )
@@ -776,7 +668,7 @@ fn signed_out_badge() -> impl IntoElement {
             .size(12.)
             .color(colors::fg_secondary())
             .into_element(),
-        "Signed out".to_string(),
+        t("oneclient.settings.accounts.badge.signed_out").to_string(),
         colors::component_border(),
         colors::fg_secondary(),
     )
@@ -788,14 +680,14 @@ fn badge(icon: impl IntoElement, text: String, border: Color, fg: Color) -> impl
         .cross_align(Alignment::Center)
         .spacing(4.)
         .padding(Gaps::new_symmetric(2., 8.))
-        .corner_radius(CornerRadius::new_all(999.))
+        .corner_radius(rounded(999.))
         .border(border_all_color(1., border))
         .background(colors::component_bg())
         .child(icon)
         .child(
             label()
                 .text(text)
-                .font_size(10.)
+                .font_size(text_size(10.))
                 .font_weight(FontWeight::MEDIUM)
                 .color(fg),
         )
@@ -809,7 +701,7 @@ fn empty_state() -> Element {
         .center()
         .padding(Gaps::new_all(32.))
         .spacing(8.)
-        .corner_radius(CornerRadius::new_all(12.))
+        .corner_radius(rounded(12.))
         .background(colors::page_elevated())
         .child(
             Icon::new(IconType::Users01)
@@ -818,8 +710,8 @@ fn empty_state() -> Element {
         )
         .child(
             label()
-                .text("No accounts yet. Add one above.")
-                .font_size(14.)
+                .text(t("oneclient.settings.accounts.empty"))
+                .font_size(text_size(14.))
                 .color(colors::fg_secondary()),
         )
         .into_element()

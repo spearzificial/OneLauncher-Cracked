@@ -1,5 +1,6 @@
 mod actions;
 mod active_cluster;
+mod chat;
 mod debounce;
 mod overlay_claims;
 mod queries;
@@ -7,6 +8,12 @@ mod selection;
 mod shortcut_actions;
 mod sync_actions;
 mod view_state;
+
+pub use chat::{
+    start_invite_join,
+    ChatJob, chat_draft, load_conversations, load_invite_games, load_roster, load_self_status,
+    mark_read as mark_chat_read, notify_chat, player_name, resync_chat, save_chat_draft,
+};
 
 pub use debounce::use_debounced;
 pub use overlay_claims::{
@@ -30,8 +37,13 @@ pub use active_cluster::{
 };
 
 pub use actions::{
+    CloudSignal, add_collaborator, cloud_engine, cloud_sync_signal, forget_deleted_cluster,
+    load_collaborators, load_is_shared, load_owner_check, load_setting_files, load_sync_left_out,
+    remove_collaborator,
+};
+pub use actions::{
     Actions, AlternativePick, ExternalImportJob, NotificationBuilder, PumpSignal, exporting,
-    modpack_job_running,
+    modpack_job_running, update_check_running,
 };
 pub(crate) use actions::listed;
 pub use queries::ALL_VERSIONS;
@@ -69,9 +81,10 @@ pub use queries::{
     use_bundle_overrides, use_bundle_updates, use_bundles_with_status, use_cached_image,
     use_cancel_microsoft_login, use_changelog, use_cluster, use_cluster_analytics,
     use_cluster_content, use_cluster_logs, use_cluster_mutation, use_cluster_profile,
-    use_cluster_screenshots, use_cluster_settings, use_clusters, use_current_account,
+    use_cluster_screenshots, use_cluster_settings, use_clusters, use_shared_groups, use_current_account,
     use_default_account, use_disable_warnings, use_discard_leftovers, use_finish_microsoft_login,
-    use_game_profile, use_game_versions, use_global_analytics, use_java_majors, use_java_runtimes,
+    use_folder_packs, use_game_profile, use_game_versions, use_global_analytics, use_java_majors,
+    use_java_runtimes,
     use_leftovers, use_loader_versions, use_local_image, use_log_action, use_log_content,
     use_migratable_routes, use_migration, use_mods_folder_sync, use_named_profiles,
     use_onboarding_bundles, use_package_categories, use_package_meta_batch, use_package_project,
@@ -84,6 +97,7 @@ pub use queries::{
     use_version_loaders, use_version_metadata, use_versions, version_list, versions_metadata,
     versions_total,
 };
+pub use queries::{GraphicsBackendQuery, use_graphics_backend};
 pub use queries::{
     add_world_datapacks, delete_world, delete_world_datapack, invalidate_world_contents,
     spawn_world_task, try_cluster_worlds, try_world_datapacks, try_world_size, use_cluster_worlds,
@@ -92,21 +106,36 @@ pub use queries::{
 pub use queries::{external_launchers, use_external_launchers};
 pub use queries::{import_screening, retry_import_screening, use_import_screening};
 
+use crate::chat::{ChatInbox, ChatRoster, ChatThread};
 use crate::notifications::NotificationSnapshot;
 use crate::state::{
-    AppChannel, GameState, InstallState, LauncherInit, LoginProgress, ReleaseMigrationPrompt,
-    RelocationState, SettingsState, StorageScanProgress,
+    AppChannel, AppState, GameState, InstallState, LauncherInit, LoginProgress,
+    ReleaseMigrationPrompt, RelocationState, SettingsState, StorageScanProgress,
 };
 use freya::prelude::*;
-use freya::radio::use_radio;
+use freya::radio::{RadioStation, use_radio};
+
+pub fn use_provide_station(
+    init: impl FnOnce() -> AppState + 'static,
+) -> RadioStation<AppState, AppChannel> {
+    let contexts = GlobalContexts::get();
+    let station = use_hook(move || {
+        contexts
+            .get_context_or_insert(|| RadioStation::<AppState, AppChannel>::create_global(init()))
+    });
+
+    use_provide_context(|| station);
+    station
+}
 
 pub fn use_provide_actions(actions: &Actions) {
     let actions = actions.clone();
-    use_provide_root_context(move || actions.clone());
+    let contexts = GlobalContexts::get();
+    use_hook(move || contexts.insert_context(actions));
 }
 
 pub fn use_dispatch() -> Actions {
-    consume_root_context::<Actions>()
+    GlobalContexts::get().get_context::<Actions>()
 }
 
 /// Wakes its component only when that channel is written so a toast tick does
@@ -161,12 +190,118 @@ pub fn use_control_center_open() -> bool {
         .control_center_open
 }
 
+pub fn use_cloud_sync() -> crate::state::CloudSyncState {
+    use_radio(AppChannel::CloudSync).read().cloud_sync.clone()
+}
+
+pub fn use_share_progress(cluster_id: i64) -> Option<crate::state::ShareProgress> {
+    use_radio(AppChannel::Share)
+        .read()
+        .shares
+        .get(&cluster_id)
+        .cloned()
+}
+
+pub fn use_chat_allowed() -> bool {
+    let settings = use_radio(AppChannel::Settings);
+    crate::chat::chat_allowed(
+        &settings.read().settings.settings,
+        oneclient_common::consent::declined(),
+    )
+}
+
+pub fn use_social_open() -> bool {
+    use_radio(AppChannel::Social).read().social_open
+}
+
+pub fn use_social_tab() -> crate::state::SocialTab {
+    use_radio(AppChannel::Social).read().social_tab
+}
+
+pub fn use_social_popped_notice() -> bool {
+    use_radio(AppChannel::Social).read().social_popped_notice
+}
+
 pub fn use_game_snapshot() -> GameState {
     use_radio(AppChannel::Game).read().game.clone()
 }
 
 pub fn use_installs_snapshot() -> InstallState {
     use_radio(AppChannel::Installs).read().installs.clone()
+}
+
+pub fn use_chat_inbox() -> ChatInbox {
+    use_radio(AppChannel::Chat).read().chat.inbox()
+}
+
+pub fn use_chat_roster() -> ChatRoster {
+    use_radio(AppChannel::ChatRoster).read().chat.roster()
+}
+
+pub fn use_chat_thread(group_id: i32) -> ChatThread {
+    use_radio(AppChannel::Chat).read().chat.thread(group_id)
+}
+
+pub fn use_chat_unread() -> bool {
+    let roster = use_radio(AppChannel::ChatRoster);
+    let chat = use_radio(AppChannel::Chat);
+    let incoming = roster.read().chat.has_incoming_requests();
+    incoming || chat.read().chat.has_unread()
+}
+
+pub fn use_player_online(player: uuid::Uuid) -> bool {
+    let presence = use_radio(AppChannel::ChatPresence);
+    let roster = use_radio(AppChannel::ChatRoster);
+    let _ = roster.read();
+    presence.read().chat.is_online(player)
+}
+
+pub fn use_chat_online_set(players: Vec<uuid::Uuid>) -> std::collections::HashSet<uuid::Uuid> {
+    let presence = use_radio(AppChannel::ChatPresence);
+    let roster = use_radio(AppChannel::ChatRoster);
+    let _ = roster.read();
+    let state = presence.read();
+    players
+        .into_iter()
+        .filter(|player| state.chat.is_online(*player))
+        .collect()
+}
+
+pub fn use_chat_online_count(members: &[uuid::Uuid]) -> usize {
+    let presence = use_radio(AppChannel::ChatPresence);
+    let roster = use_radio(AppChannel::ChatRoster);
+    let chat = use_radio(AppChannel::Chat);
+    let _ = roster.read();
+    let _ = presence.read();
+    chat.read().chat.online_count(members)
+}
+
+pub fn use_invite_join() -> Option<crate::state::InviteJoinPrompt> {
+    use_radio(AppChannel::Social).read().invite_join.clone()
+}
+
+pub fn use_chat_invite_game(invite_id: i32) -> Option<crate::chat::InviteGame> {
+    use_radio(AppChannel::Chat)
+        .read()
+        .chat
+        .invite_game(invite_id)
+        .cloned()
+}
+
+pub fn use_chat_invites() -> Vec<crate::chat::ChatInvite> {
+    use_radio(AppChannel::Chat).read().chat.invites()
+}
+
+pub fn use_chat_friend_request() -> crate::chat::FriendRequestStatus {
+    use_radio(AppChannel::Chat)
+        .read()
+        .chat
+        .friend_request
+        .clone()
+}
+
+pub fn use_chat_self_status() -> oneclient_polyplus::PlayerStatus {
+    use_radio(AppChannel::Chat).read().chat.self_status
 }
 
 pub fn use_storage_scan_progress() -> Option<StorageScanProgress> {
@@ -180,6 +315,13 @@ pub fn use_pending_launch() -> Option<String> {
     use_radio(AppChannel::PendingLaunch)
         .read()
         .pending_launch
+        .clone()
+}
+
+pub fn use_pending_share() -> Option<String> {
+    use_radio(AppChannel::PendingLaunch)
+        .read()
+        .pending_share
         .clone()
 }
 

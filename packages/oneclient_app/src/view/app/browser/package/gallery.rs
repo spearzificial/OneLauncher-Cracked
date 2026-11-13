@@ -6,7 +6,8 @@ use oneclient_content::packages::types::GalleryImage;
 
 use crate::components::{Button, Icon, IconType, OverlayPopup};
 use crate::hooks::{loaded_image, query_is_busy, use_cached_image};
-use crate::theme::colors;
+use crate::i18n::{t, tf};
+use crate::theme::{colors, rounded, text_size};
 use crate::ui::{ImageFallbackExt, border_all_color, flow_grid, grid_columns_for_width};
 
 const MAX_COL_W: f32 = 400.;
@@ -72,13 +73,15 @@ struct GalleryTile {
 }
 
 impl KeyExt for GalleryTile {
-    fn write_key(&mut self) -> &mut DiffKey {
+    fn key_mut(&mut self) -> &mut DiffKey {
         &mut self.key
     }
 }
 
 impl Component for GalleryTile {
     fn render(&self) -> impl IntoElement {
+        let thumbnail_query = use_cached_image(self.image.thumbnail_url.clone(), TILE_EDGE);
+        let thumbnail = loaded_image(self.image.thumbnail_url.as_deref(), &thumbnail_query);
         let query = use_cached_image(Some(self.image.url.clone()), TILE_EDGE);
         let loaded = loaded_image(Some(&self.image.url), &query);
 
@@ -91,12 +94,23 @@ impl Component for GalleryTile {
             .center()
             .overflow(Overflow::Clip)
             .background(colors::component_bg())
-            .maybe_child(loaded.map(|(url, bytes)| {
+            .maybe_child(thumbnail.map(|(url, bytes)| {
                 ImageViewer::new((url, bytes))
                     .width(Size::fill())
                     .height(Size::fill())
                     .aspect_ratio(AspectRatio::Max)
                     .image_cover(ImageCover::Center)
+                    .fallback(broken_image(32.))
+                    .into_element()
+            }))
+            .maybe_child(loaded.map(|(url, bytes)| {
+                ImageViewer::new((url, bytes))
+                    .position(Position::new_absolute().top(0.).left(0.))
+                    .width(Size::percent(100.))
+                    .height(Size::percent(100.))
+                    .aspect_ratio(AspectRatio::Max)
+                    .image_cover(ImageCover::Center)
+                    .loading_placeholder(rect().into_element())
                     .fallback(broken_image(32.))
                     .into_element()
             }));
@@ -105,7 +119,7 @@ impl Component for GalleryTile {
             .vertical()
             .width(Size::flex(1.0))
             .max_width(Size::px(MAX_COL_W))
-            .corner_radius(CornerRadius::new_all(10.))
+            .corner_radius(rounded(10.))
             .overflow(Overflow::Clip)
             .background(colors::page_elevated())
             .border(
@@ -133,7 +147,7 @@ impl Component for GalleryTile {
                         .child(
                             label()
                                 .text(self.image.title.clone().unwrap_or_default())
-                                .font_size(12.)
+                                .font_size(text_size(12.))
                                 .max_lines(2)
                                 .color(colors::fg_secondary()),
                         ),
@@ -189,8 +203,8 @@ impl Component for GalleryViewer {
             // A full-size fetch separate from the tile's cached copy a failed fetch is not loading
             .maybe_child(query_is_busy(&query).then(|| {
                 label()
-                    .text("Loading image...")
-                    .font_size(13.)
+                    .text(t("oneclient.browser.package.gallery.loading"))
+                    .font_size(text_size(13.))
                     .color(colors::fg_secondary())
                     .into_element()
             }));
@@ -269,7 +283,7 @@ fn chevron_btn(
         .width(Size::px(44.))
         .height(Size::px(44.))
         .center()
-        .corner_radius(CornerRadius::new_all(22.));
+        .corner_radius(rounded(22.));
 
     if !enabled {
         return base
@@ -299,7 +313,7 @@ fn header_row(
     let title = image
         .title
         .clone()
-        .unwrap_or_else(|| format!("Image {}", idx + 1));
+        .unwrap_or_else(|| tf("oneclient.browser.package.gallery.image", &[&(idx + 1)]));
 
     rect()
         .horizontal()
@@ -314,7 +328,7 @@ fn header_row(
                 .child(
                     label()
                         .text(title)
-                        .font_size(15.)
+                        .font_size(text_size(15.))
                         .font_weight(FontWeight::SEMI_BOLD)
                         .max_lines(1)
                         .color(colors::fg_primary()),
@@ -322,8 +336,11 @@ fn header_row(
                 .maybe(len > 1, |el| {
                     el.child(
                         label()
-                            .text(format!("{} of {len}", idx + 1))
-                            .font_size(11.)
+                            .text(tf(
+                                "oneclient.browser.package.gallery.position",
+                                &[&(idx + 1), &len],
+                            ))
+                            .font_size(text_size(11.))
                             .color(colors::fg_secondary()),
                     )
                 }),
@@ -332,7 +349,7 @@ fn header_row(
             Button::new()
                 .ghost()
                 .icon()
-                .tooltip("Close")
+                .tooltip(t("oneclient.common.close"))
                 .on_press(on_close)
                 .child(Icon::new(IconType::XClose).size(18.)),
         )

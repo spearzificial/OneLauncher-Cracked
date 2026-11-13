@@ -20,7 +20,7 @@ use crate::game::session::SessionRecorder;
 use crate::game::shared_dir::{cluster_mods, jar_bundled_mod_ids, jar_mod_id};
 use crate::game::tail::spawn_log_tail;
 use crate::game::{DirBusy, GameError};
-use crate::settings::{GameSettingsProfile, GraphicsBackend};
+use crate::settings::GameSettingsProfile;
 use crate::state::{LauncherServices, LauncherState};
 use oneclient_auth::MinecraftAccount;
 use oneclient_common::paths;
@@ -48,6 +48,17 @@ pub async fn launch_cluster(
     account: &MinecraftAccount,
     search_for_java: bool,
 ) -> LauncherResult<LaunchedGame> {
+    launch_cluster_with(state, cluster_id, account, search_for_java, None).await
+}
+
+#[tracing::instrument(skip(state, account))]
+pub async fn launch_cluster_with(
+    state: &Arc<LauncherState>,
+    cluster_id: i64,
+    account: &MinecraftAccount,
+    search_for_java: bool,
+    extra_jvm_arg: Option<&str>,
+) -> LauncherResult<LaunchedGame> {
     tracing::info!(cluster_id, search_for_java, "launching cluster");
 
     // Parallel clusters or not a cluster runs only once a second game would
@@ -60,7 +71,7 @@ pub async fn launch_cluster(
         return Err(GameError::AlreadyRunning(cluster_id).into());
     }
 
-    let result = start(state, cluster_id, account, search_for_java).await;
+    let result = start(state, cluster_id, account, search_for_java, extra_jvm_arg).await;
 
     if result.is_err() {
         state.games.remove(cluster_id);
@@ -73,11 +84,20 @@ pub async fn launch_cluster(
     result
 }
 
+fn jvm_args_with(profile_args: Option<&str>, extra: Option<&str>) -> String {
+    match (profile_args.unwrap_or_default(), extra) {
+        ("", Some(extra)) => extra.to_string(),
+        (args, Some(extra)) => format!("{args} {extra}"),
+        (args, None) => args.to_string(),
+    }
+}
+
 async fn start(
     state: &Arc<LauncherState>,
     cluster_id: i64,
     account: &MinecraftAccount,
     search_for_java: bool,
+    extra_jvm_arg: Option<&str>,
 ) -> LauncherResult<LaunchedGame> {
     let events = state.services.events.clone();
     let stage = |s: LaunchStage| {
@@ -114,6 +134,9 @@ async fn start(
     }
 
     let existing = state.clusters.get(cluster_id).await?;
+    if let Some(group) = existing.missing_shared_group() {
+        return Err(GameError::SharedFolderMissing(group).into());
+    }
 
     let game_dir = existing.game_dir()?;
     let dedicated = existing.uses_dedicated_dir();
@@ -289,7 +312,13 @@ async fn start(
             .await?
     };
 
-    match game_files_missing(&version_info, &java.os_arch, updated) {
+    // Stats every library and the asset tree, the same work `plan_downloads`
+    // already keeps off the runtime threads. `block_in_place` because
+    // `VersionInfo` is not `Clone` and the sweep only reads it
+    let missing = tokio::task::block_in_place(|| {
+        game_files_missing(&version_info, &java.os_arch, updated)
+    });
+    match missing {
         Ok(true) => {
             tracing::info!(cluster_id, "missing game files; repairing");
             let _ = state
@@ -355,29 +384,6 @@ async fn start(
         crate::game::link_cluster_logs(&cluster, &cwd).await;
     }
 
-    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
-
-    if account.is_offline() {
-        let mut scan_dirs = vec![mods_dir.clone(), cwd.join("mods")];
-        if let Ok(shared_mods) = paths::shared_mods_dir() {
-            scan_dirs.push(shared_mods);
-        }
-        if let Ok(shared_mc) = paths::shared_minecraft_dir() {
-            scan_dirs.push(shared_mc.join("mods"));
-        }
-        crate::game::skin_server::disable_incompatible_offline_mods(&scan_dirs).await;
-        if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric
-            && version.id == "1.21.11"
-        {
-            if let Ok(mod_jar) = crate::game::skin_server::prepare_offline_skins_mod().await {
-                let target_mod = mods_dir.join("offlineskins-fabric.jar");
-                if !target_mod.exists() {
-                    let _ = polyio::copy(&mod_jar, &target_mod).await;
-                }
-            }
-        }
-    }
-
     let client_jar = paths::versions_dir()?
         .join(&version_name)
         .join(format!("{version_name}.jar"));
@@ -405,11 +411,12 @@ async fn start(
         profile
             .mem_max
             .unwrap_or_else(oneclient_common::default_mem_max),
-        profile.launch_args.clone().unwrap_or_default(),
+        jvm_args_with(profile.launch_args.as_deref(), extra_jvm_arg),
         &java.os_arch,
         java.major,
     )?;
 
+    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
     if let Some(arg) = crate::game::mods_folder_argument(
         cluster.mc_loader,
         loader_version_id,
@@ -420,36 +427,15 @@ async fn start(
         jvm_args.push(arg);
     }
 
-    // Always clean up legacy jar patches and resource packs to ensure clean vanilla state
-    crate::game::skin_server::cleanup_legacy_skin_injection(&cwd, &client_jar).await;
+    let crash_dir = cluster.dir()?.join("crash-reports");
+    polyio::create_dir_all(&crash_dir).await.ok();
+    let error_file = crash_dir.join("hs_err_pid").display().to_string();
+    jvm_args.insert(
+        0,
+        format!("-XX:ErrorFile={}%p.log", error_file.replace('%', "%%")),
+    );
 
-    let mut offline_skin_port = None;
-
-    // Attach proper Authlib-Injector offline skin system if running an offline account
-    if account.is_offline() {
-        let account_uuid_str = account.id.to_string();
-        crate::game::skin_server::register_launch_account(&account_uuid_str, &account.username);
-        crate::game::skin_server::sync_offline_skins(&cwd, &account_uuid_str, &account.username).await;
-        if let Some(parent) = mods_dir.parent()
-            && parent != cwd
-        {
-            crate::game::skin_server::sync_offline_skins(parent, &account_uuid_str, &account.username).await;
-        }
-
-        if let Ok(port) = crate::game::skin_server::ensure_skin_server().await
-            && let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await
-        {
-            offline_skin_port = Some(port);
-            let agent_arg = format!(
-                "-javaagent:{}=http://127.0.0.1:{port}",
-                injector_jar.display()
-            );
-            tracing::info!(%agent_arg, "attaching authlib-injector for proper offline skin support");
-            jvm_args.push(agent_arg);
-            jvm_args.push("-Dauthlibinjector.noShowServerName=true".to_string());
-            jvm_args.push("-Dauthlibinjector.noLogFile=true".to_string());
-        }
-    }
+    oneclient_cluster::logs::censor_username(&account.username);
 
     let mut mc_args = arguments::minecraft_arguments(
         arg_map.get(&ArgumentType::Game).map(Vec::as_slice),
@@ -465,34 +451,6 @@ async fn start(
         profile.resolution.unwrap_or_default(),
         &java.os_arch,
     )?;
-    if account.is_offline()
-        && let Some(port) = offline_skin_port
-        && let Some(user_props) =
-            crate::game::skin_server::build_user_properties(&account.id.to_string(), port).await
-    {
-        let mut replaced = false;
-        for i in 0..mc_args.len() {
-            if mc_args[i] == "--userProperties" && i + 1 < mc_args.len() {
-                mc_args[i + 1] = user_props.clone();
-                replaced = true;
-                break;
-            }
-        }
-        if !replaced {
-            mc_args.push("--userProperties".to_string());
-            mc_args.push(user_props);
-        }
-    }
-
-    if let Some(backend) = profile.graphics_backend
-        && backend != GraphicsBackend::Default
-        && GraphicsBackend::supported_on(&mc_version)
-    {
-        mc_args.extend([
-            "--graphicsBackend".to_string(),
-            backend.as_str().to_string(),
-        ]);
-    }
     arguments::append_profile_game_arguments(
         &mut mc_args,
         profile.force_fullscreen,
@@ -521,7 +479,7 @@ async fn start(
 
     let (mut command, wrapper) = base_command(&profile, &java.absolute_path);
 
-    if let Some(gpu) = profile.gpu() {
+    if let Some(gpu) = profile.gpu().or(crate::game::gpu::DEFAULT) {
         crate::game::gpu::select(&mut command, &java.absolute_path, gpu).await;
     }
 
@@ -1113,6 +1071,9 @@ fn shell_quote(arg: &str) -> String {
 
 fn apply_env(command: &mut Command, profile: &GameSettingsProfile) {
     command.env_remove("_JAVA_OPTIONS");
+    oneclient_common::process::strip_appimage_env(command.as_std_mut());
+    #[cfg(all(unix, not(target_os = "macos")))]
+    command.env("LC_ALL", "C.UTF-8");
 
     if let Some(env) = &profile.launch_env {
         for pair in env.split_whitespace() {
@@ -1144,6 +1105,7 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) -> Option<String> {
     command.stderr(Stdio::piped());
     command.stdin(Stdio::null());
     oneclient_common::process::no_window(command.as_std_mut());
+    oneclient_common::process::strip_appimage_env(command.as_std_mut());
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -1283,5 +1245,18 @@ mod tests {
     fn an_unobserved_exit_counts_when_the_game_wrote_a_crash_report() {
         assert!(counts_as_crash(&Exit::Inferred, None, true));
         assert!(!counts_as_crash(&Exit::Inferred, None, false));
+    }
+}
+
+#[cfg(test)]
+mod jvm_arg_tests {
+    use super::jvm_args_with;
+
+    #[test]
+    fn the_extra_argument_lands_after_the_profile() {
+        assert_eq!(jvm_args_with(Some("-Xss2m"), Some("-Da=1")), "-Xss2m -Da=1");
+        assert_eq!(jvm_args_with(None, Some("-Da=1")), "-Da=1");
+        assert_eq!(jvm_args_with(Some("-Xss2m"), None), "-Xss2m");
+        assert_eq!(jvm_args_with(None, None), "");
     }
 }

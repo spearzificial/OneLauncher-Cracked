@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 use freya::prelude::*;
+use freya::torin::geometry::Point2D;
 
-use crate::theme::colors;
+use crate::theme::{colors, rounded};
 
 const LAZY_OVERSCAN: i64 = 3;
 const SCROLLBAR_GUTTER: f32 = 14.;
+const BOTTOM_SLOP: f32 = 2.;
 
 pub(crate) fn normalize_wheel_delta(delta: f64, scale_factor: f64) -> f32 {
     if delta == 0.0 {
@@ -58,6 +60,10 @@ pub(crate) fn corrected_scroll(inner: f32, viewport: f32, pos: f32) -> f32 {
     pos
 }
 
+pub(crate) fn scrolled_to_bottom(inner: f32, viewport: f32, target: f32) -> bool {
+    -target >= inner - viewport - BOTTOM_SLOP
+}
+
 pub(crate) fn scrollbar_pos_and_size(inner: f32, viewport: f32, scroll: f32) -> (f32, f32) {
     if viewport >= inner {
         return (0.0, inner);
@@ -77,8 +83,9 @@ pub struct ScrollAreaCtx {
     pub corrected_y: f32,
     pub viewport_w: f32,
     pub viewport_h: f32,
-    pub viewport_top: f32,
-    pub viewport_left: f32,
+    pub at_bottom: bool,
+    pub viewport_top: State<f32>,
+    pub viewport_left: State<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +107,7 @@ enum LazyRow {
 pub struct ScrollArea {
     width: Size,
     height: Size,
+    max_height: Size,
     padding: Gaps,
     spacing: f32,
     show_scrollbar: bool,
@@ -107,6 +115,7 @@ pub struct ScrollArea {
     horizontal: bool,
     content_width: f32,
     stick_bottom: bool,
+    anchor_key: Option<i64>,
     reset_key: Option<u64>,
     controller: Option<ScrollController>,
     on_user_scroll: Option<EventHandler<()>>,
@@ -126,6 +135,7 @@ impl ScrollArea {
         Self {
             width: Size::fill(),
             height: Size::flex(1.0),
+            max_height: Size::default(),
             padding: Gaps::default(),
             spacing: 0.,
             show_scrollbar: true,
@@ -133,6 +143,7 @@ impl ScrollArea {
             horizontal: false,
             content_width: 0.,
             stick_bottom: false,
+            anchor_key: None,
             reset_key: None,
             controller: None,
             on_user_scroll: None,
@@ -149,6 +160,11 @@ impl ScrollArea {
 
     pub fn height(mut self, height: Size) -> Self {
         self.height = height;
+        self
+    }
+
+    pub fn max_height(mut self, max_height: Size) -> Self {
+        self.max_height = max_height;
         self
     }
 
@@ -190,6 +206,11 @@ impl ScrollArea {
 
     pub fn scroll_controller(mut self, controller: ScrollController) -> Self {
         self.controller = Some(controller);
+        self
+    }
+
+    pub fn anchor_bottom(mut self, key: Option<i64>) -> Self {
+        self.anchor_key = key;
         self
     }
 
@@ -442,41 +463,57 @@ impl ScrollArea {
         let show_scrollbar = self.show_scrollbar;
         let scrollbar_gutter = self.scrollbar_gutter;
         let stick_bottom = self.stick_bottom;
+        let anchor_key = self.anchor_key;
         let on_user_scroll = self.on_user_scroll.clone();
 
         let internal = use_scroll_controller(ScrollConfig::default);
         let mut controller = self.controller.unwrap_or(internal);
 
-        let scale_factor = Platform::get().scale_factor;
+        let scale_factor = Platform::get().current_window().scale_factor;
 
         let mut viewport_h = use_state(|| 0f32);
         let mut viewport_w = use_state(|| 0f32);
         let mut viewport_top = use_state(|| 0f32);
         let mut viewport_left = use_state(|| 0f32);
         let mut content_h = use_state(|| 0f32);
-        let mut scroll_x = use_state(|| 0f32);
+        let mut anchored = use_state(|| anchor_key);
         let mut drag_start = use_state::<Option<(f32, i32)>>(|| None);
         let mut drag_start_x = use_state::<Option<(f32, f32)>>(|| None);
         let mut shift_held = use_state(|| false);
 
         let reset_key = self.reset_key;
         let mut last_reset = use_state(|| reset_key);
+        let mut reset_fired = false;
         if reset_key.is_some() && *last_reset.peek() != reset_key {
             last_reset.set(reset_key);
+            controller.stop();
+            controller.scroll_to_x(0);
             controller.scroll_to_y(0);
-            scroll_x.set_if_modified(0.);
+            reset_fired = true;
         }
 
-        let (_, scrolled_y) = controller.into();
+        let mut was_sticking = use_state(|| stick_bottom);
+        if stick_bottom && !*was_sticking.peek() && !reset_fired {
+            let target = -((*content_h.peek() - *viewport_h.peek()).max(0.));
+            controller.scroll_to_y(target as i32);
+        }
+        was_sticking.set_if_modified(stick_bottom);
+
+        let (scrolled_x, scrolled_y) = controller.into();
         let vp_h = *viewport_h.read();
         let vp_w = *viewport_w.read();
-        let vp_top = *viewport_top.read();
-        let vp_left = *viewport_left.read();
         let ct_h = *content_h.read();
 
-        let corrected_y = corrected_scroll(ct_h, vp_h, scrolled_y as f32);
+        let target_y = corrected_scroll(ct_h, vp_h, scrolled_y as f32);
+        let target_x = if horizontal {
+            corrected_scroll(content_w, vp_w, scrolled_x as f32)
+        } else {
+            0.
+        };
+        let animated = controller.animated_position(Point2D::new(target_x, target_y));
+        let corrected_y = corrected_scroll(ct_h, vp_h, animated.y);
         let corrected_x = if horizontal {
-            corrected_scroll(content_w, vp_w, *scroll_x.read())
+            corrected_scroll(content_w, vp_w, animated.x)
         } else {
             0.
         };
@@ -485,7 +522,7 @@ impl ScrollArea {
         let show_v = show_scrollbar && vp_h > 0. && vp_h < ct_h;
 
         let (scrollbar_x, scrollbar_width) = scrollbar_pos_and_size(content_w, vp_w, corrected_x);
-        let show_h = horizontal && vp_w > 0. && vp_w < content_w;
+        let show_h = show_scrollbar && horizontal && vp_w > 0. && vp_w < content_w;
 
         let pressing_v = use_memo(move || drag_start.read().is_some());
         let pressing_h = use_memo(move || drag_start_x.read().is_some());
@@ -511,8 +548,9 @@ impl ScrollArea {
             corrected_y,
             viewport_w: (vp_w - gutter).max(0.),
             viewport_h: vp_h,
-            viewport_top: vp_top,
-            viewport_left: vp_left,
+            at_bottom: scrolled_to_bottom(ct_h, vp_h, target_y),
+            viewport_top,
+            viewport_left,
         };
 
         if let Some(cb) = &self.on_ctx {
@@ -554,8 +592,9 @@ impl ScrollArea {
             let delta_x = normalize_wheel_delta(e.delta_x, scale);
             let delta_y = normalize_wheel_delta(e.delta_y, scale);
 
+            let sideways = shift || !can_scroll_v;
             let h_delta = if horizontal {
-                if shift && delta_x == 0.0 {
+                if sideways && delta_x == 0.0 {
                     delta_y
                 } else {
                     delta_x
@@ -563,7 +602,7 @@ impl ScrollArea {
             } else {
                 0.0
             };
-            let v_delta = if horizontal && shift { 0.0 } else { delta_y };
+            let v_delta = if horizontal && sideways { 0.0 } else { delta_y };
 
             let do_h = h_delta != 0.0 && can_scroll_h;
             let do_v = v_delta != 0.0 && can_scroll_v;
@@ -578,10 +617,17 @@ impl ScrollArea {
                 cb.call(());
             }
 
+            if e.source == WheelSource::Line {
+                controller.animate_from(Point2D::new(corrected_x, corrected_y));
+            } else {
+                controller.stop();
+            }
+
             if do_h {
-                let cur_x = corrected_scroll(content_w, vp_w, *scroll_x.read());
-                let new_x = scroll_pos_from_wheel(h_delta, content_w, vp_w, cur_x);
-                scroll_x.set(new_x as f32);
+                let (cur_x, _) = controller.into();
+                let current = corrected_scroll(content_w, vp_w, cur_x as f32);
+                let new_x = scroll_pos_from_wheel(h_delta, content_w, vp_w, current);
+                controller.scroll_to_x(new_x);
             }
 
             if do_v {
@@ -598,6 +644,7 @@ impl ScrollArea {
             if let Some(cb) = &us_thumb {
                 cb.call(());
             }
+            controller.stop();
             let (_, y) = controller.into();
             drag_start.set(Some((e.global_location().y as f32, y)));
         };
@@ -606,7 +653,9 @@ impl ScrollArea {
             if let Some(cb) = &us_h_thumb {
                 cb.call(());
             }
-            drag_start_x.set(Some((e.global_location().x as f32, *scroll_x.read())));
+            controller.stop();
+            let (x, _) = controller.into();
+            drag_start_x.set(Some((e.global_location().x as f32, x as f32)));
         };
 
         let on_global_move = move |e: Event<PointerEventData>| {
@@ -637,7 +686,7 @@ impl ScrollArea {
                 let cursor_dx = e.global_location().x as f32 - grab_x;
                 let scroll_dx = -(cursor_dx / thumb_range) * scroll_range;
                 let target = scroll_at_grab + scroll_dx;
-                scroll_x.set_if_modified(corrected_scroll(content_w, vp_w, target));
+                controller.scroll_to_x(corrected_scroll(content_w, vp_w, target) as i32);
             }
         };
 
@@ -653,6 +702,7 @@ impl ScrollArea {
         rect()
             .width(self.width.clone())
             .height(self.height.clone())
+            .max_height(self.max_height.clone())
             .scrollable(true)
             .a11y_builder(move |node| {
                 node.set_scroll_x(corrected_x as f64);
@@ -677,7 +727,12 @@ impl ScrollArea {
             .child(
                 rect()
                     .width(Size::fill())
-                    .height(Size::flex(1.0))
+                    .height(if self.height == Size::Inner {
+                        Size::Inner
+                    } else {
+                        Size::flex(1.0)
+                    })
+                    .max_height(self.max_height.clone())
                     .overflow(Overflow::Clip)
                     .on_sized(move |e: Event<SizedEventData>| {
                         let h = e.area.height();
@@ -686,6 +741,10 @@ impl ScrollArea {
                         let left = e.area.min_x();
                         if (*viewport_h.read() - h).abs() > 0.5 {
                             viewport_h.set(h);
+                            if stick_bottom {
+                                let target = -((*content_h.read() - h).max(0.).ceil());
+                                controller.scroll_to_y(target as i32);
+                            }
                         }
                         if (*viewport_w.read() - w).abs() > 0.5 {
                             viewport_w.set(w);
@@ -704,14 +763,20 @@ impl ScrollArea {
                             .offset_y(corrected_y)
                             .on_sized(move |e: Event<SizedEventData>| {
                                 let h = e.area.height();
-                                if (*content_h.read() - h).abs() > 0.5 {
+                                let grown = h - *content_h.read();
+                                if grown.abs() > 0.5 {
                                     content_h.set(h);
                                     if stick_bottom {
                                         let vp = *viewport_h.read();
                                         let target = -((h - vp).max(0.).ceil());
                                         controller.scroll_to_y(target as i32);
+                                    } else if *anchored.peek() != anchor_key {
+                                        let (_, y) = controller.into();
+                                        controller.stop();
+                                        controller.scroll_to_y(y - grown.round() as i32);
                                     }
                                 }
+                                anchored.set_if_modified(anchor_key);
                             })
                             .child(content_el),
                     )
@@ -746,6 +811,7 @@ impl PartialEq for ScrollArea {
         }
         self.width == other.width
             && self.height == other.height
+            && self.max_height == other.max_height
             && self.padding == other.padding
             && self.spacing == other.spacing
             && self.show_scrollbar == other.show_scrollbar
@@ -753,6 +819,7 @@ impl PartialEq for ScrollArea {
             && self.horizontal == other.horizontal
             && self.content_width == other.content_width
             && self.stick_bottom == other.stick_bottom
+            && self.anchor_key == other.anchor_key
             && self.reset_key == other.reset_key
             && self.children == other.children
     }
@@ -801,7 +868,7 @@ impl Component for ScrollThumb {
                 Position::new_absolute().left(self.main_pos).bottom(2.),
                 Size::px(self.length),
                 Size::px(8.),
-                Layer::Relative(2),
+                Layer::Relative(999),
             )
         };
 
@@ -824,8 +891,21 @@ impl Component for ScrollThumb {
                 rect()
                     .width(bar_w)
                     .height(bar_h)
-                    .corner_radius(CornerRadius::new_all(12.))
+                    .corner_radius(rounded(12.))
                     .background(color.with_a(160)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn being_within_the_slop_of_the_end_counts_as_the_bottom() {
+        assert!(scrolled_to_bottom(1000., 300., -700.));
+        assert!(scrolled_to_bottom(1000., 300., -699.));
+        assert!(!scrolled_to_bottom(1000., 300., -600.));
+        assert!(scrolled_to_bottom(200., 300., 0.));
     }
 }

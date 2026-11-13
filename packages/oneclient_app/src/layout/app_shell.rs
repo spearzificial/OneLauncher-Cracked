@@ -11,8 +11,9 @@ use crate::Route;
 use crate::components::Button;
 use crate::components::{
     ART_PREVIEW_EDGE, AppNavbar, CodeBlock, CrashDialog, DynamicArt, FileDropOverlay, Icon,
-    IconType, OverlayPopup, accept_drop, copy_button,
+    IconType, OverlayPopup, accept_drop, copy_button, use_provide_lobby,
 };
+use crate::i18n::{t, tf};
 use crate::layout::AnimatedAppOutlet;
 use crate::use_settings_snapshot;
 use oneclient_core::clusters::Cluster;
@@ -21,11 +22,13 @@ use oneclient_db::models::ClusterId;
 
 use crate::hooks::{
     ActiveClusterState, BROWSER_COMPAT_DEFAULT, BrowserCompatState, BrowserStateStore,
-    BrowserTypeState, DataPackWorldState, use_active_cluster_id, use_clusters, use_game_snapshot,
-    use_launcher, use_provide_active_cluster, use_provide_browser_compat,
-    use_provide_browser_state, use_provide_browser_type, use_provide_datapack_world, use_splash,
+    BrowserTypeState, DataPackWorldState, settled_or_loading, use_active_cluster_id,
+    use_clusters, use_current_account, use_dispatch, use_game_snapshot, use_launcher,
+    use_provide_active_cluster, use_provide_browser_compat, use_provide_browser_state,
+    use_provide_browser_type, use_provide_datapack_world, use_splash, use_upload_log,
 };
-use crate::theme::colors;
+use crate::components::upload_mclogs::use_mclogs_feedback;
+use crate::theme::{colors, rounded, text_size};
 use crate::utils::home_cluster;
 use oneclient_events::LaunchStage;
 use std::collections::HashMap;
@@ -38,6 +41,7 @@ impl Component for AppShell {
     fn render(&self) -> impl IntoElement {
         let active_cluster = use_state(|| None::<ClusterId>);
         use_provide_active_cluster(ActiveClusterState(active_cluster));
+        use_provide_lobby();
 
         let browser_compat = use_state(|| BROWSER_COMPAT_DEFAULT);
         use_provide_browser_compat(BrowserCompatState(browser_compat));
@@ -50,6 +54,13 @@ impl Component for AppShell {
 
         let datapack_world = use_state(HashMap::new);
         use_provide_datapack_world(DataPackWorldState(datapack_world));
+
+        use_mclogs_feedback(use_upload_log());
+
+        let dispatch = use_dispatch();
+        if let Some(account) = settled_or_loading(&use_current_account()) {
+            dispatch.sync_chat_owner(account.as_ref());
+        }
 
         // `FileDrop` bubbles so anything a drop zone doesn't `stop_propagation()` lands here
         let mut drop_hovering = use_state(|| false);
@@ -64,8 +75,13 @@ impl Component for AppShell {
             .find(|(_, s)| **s == LaunchStage::Running)
             .map(|(id, _)| *id);
 
+        // Peeked so turning the setting back on mid-game doesn't yank the view
+        let station = use_dispatch().station();
         use_side_effect_with_deps(&running_cluster, move |running| {
-            if let Some(cluster_id) = *running {
+            let open_log = station.peek().settings.settings.open_game_log_on_launch;
+            if let Some(cluster_id) = *running
+                && open_log
+            {
                 spawn(async move {
                     let _ = RouterContext::get().push(Route::ProcessLogs { cluster_id });
                 });
@@ -138,7 +154,7 @@ impl Component for LaunchErrorDialog {
                             .vertical()
                             .width(Size::px(560.))
                             .background(colors::page_elevated())
-                            .corner_radius(CornerRadius::new_all(16.))
+                            .corner_radius(rounded(16.))
                             .padding(Gaps::new_all(24.))
                             .spacing(16.)
                             .border(crate::ui::border_all_color(1., colors::component_border()))
@@ -155,16 +171,16 @@ impl Component for LaunchErrorDialog {
                                     )
                                     .child(
                                         label()
-                                            .text("Game failed to launch")
-                                            .font_size(18.)
+                                            .text(t("oneclient.layout.game_error.title"))
+                                            .font_size(text_size(18.))
                                             .font_weight(FontWeight::SEMI_BOLD)
                                             .color(colors::fg_primary()),
                                     ),
                             )
                             .child(
                                 label()
-                                    .text("Minecraft could not be launched. Error details:")
-                                    .font_size(13.)
+                                    .text(t("oneclient.layout.game_error.description"))
+                                    .font_size(text_size(13.))
                                     .color(colors::fg_secondary()),
                             )
                             .child(
@@ -180,14 +196,14 @@ impl Component for LaunchErrorDialog {
                                     .spacing(10.)
                                     .child(copy_button(
                                         self.message.clone(),
-                                        "Error message copied to your clipboard.",
+                                        t("oneclient.layout.game_error.copied"),
                                         copy_dispatch,
                                     ))
                                     .child(
                                         Button::new()
                                             .primary()
                                             .on_press(move |_| dispatch.dismiss_game_error())
-                                            .text("Close"),
+                                            .text(t("oneclient.common.close")),
                                     ),
                             ),
                     ),
@@ -198,6 +214,7 @@ impl Component for LaunchErrorDialog {
 pub(crate) fn appshell_overlay(alpha: f32) -> Rect {
     let alpha = alpha.clamp(0., 1.);
     let scale = |a: u8| (f32::from(a) * alpha).round() as u8;
+    let top = if colors::is_light() { 215 } else { 100 };
 
     rect()
         .width(Size::fill())
@@ -211,7 +228,7 @@ pub(crate) fn appshell_overlay(alpha: f32) -> Rect {
                 .width(Size::fill())
                 .background(
                     LinearGradient::new()
-                        .stop((colors::shade().with_a(scale(100)), 0.))
+                        .stop((colors::shade().with_a(scale(top)), 0.))
                         .stop((colors::page().with_a(scale(255)), 95.0)),
                 ),
         )
@@ -340,7 +357,7 @@ impl Component for ParallaxArt {
         use_side_effect_with_deps(&self.parallax_enabled, move |enabled| {
             if *enabled {
                 let handle = spawn(async move {
-                    let platform = Platform::get();
+                    let window = Platform::get().current_window();
 
                     const FRAME: std::time::Duration = std::time::Duration::from_millis(33);
                     const STEP: f32 = 0.12;
@@ -352,7 +369,7 @@ impl Component for ParallaxArt {
 
                         if (tx - cx).abs() > SETTLE || (ty - cy).abs() > SETTLE {
                             current.set((cx + (tx - cx) * STEP, cy + (ty - cy) * STEP));
-                            platform.send(UserEvent::RequestRedraw);
+                            window.request_redraw();
                         }
 
                         tokio::time::sleep(FRAME).await;
@@ -384,6 +401,9 @@ impl Component for ParallaxArt {
         let fade_opacity = self.fade_opacity;
 
         let render_cb = RenderCallback::new(move |ctx: &mut FillRenderContext| {
+            let RenderTarget::Background { canvas, .. } = &ctx.target else {
+                return;
+            };
             let Some(image) = &image else {
                 return;
             };
@@ -432,7 +452,7 @@ impl Component for ParallaxArt {
             let mut paint = Paint::default();
             paint.set_anti_alias(true);
             let sampling = SamplingOptions::from(CubicResampler::mitchell());
-            ctx.canvas.draw_image_rect_with_sampling_options(
+            canvas.draw_image_rect_with_sampling_options(
                 image,
                 Some((&src, SrcRectConstraint::Strict)),
                 dst,
@@ -583,5 +603,5 @@ pub(crate) fn back_button(destination: &str) -> impl IntoElement {
         })
         .margin(Gaps::new(0., 0., 0., 32.))
         .child(Icon::new(IconType::ArrowLeft).size(12.))
-        .text(format!("Back to {destination}"))
+        .text(tf("oneclient.layout.back_to", &[&destination]))
 }

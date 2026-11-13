@@ -5,13 +5,13 @@ use oneclient_cluster::logs::parse_level;
 use oneclient_core::{LogKind, LogLevel};
 
 use crate::components::LogViewer;
-use crate::components::upload_mclogs::use_mclogs_feedback;
 use crate::hooks::{
     try_cluster_logs, use_cluster, use_cluster_logs, use_game_snapshot, use_log_action,
     use_upload_log,
 };
+use crate::i18n::t;
 use crate::layout::cluster_content;
-use crate::theme::colors;
+use crate::theme::{colors, text_size};
 use crate::view::app::cluster::logs::{Confirm, LevelFilter, confirm_overlay, viewer_header};
 
 use super::cluster_not_found;
@@ -32,7 +32,6 @@ impl Component for ProcessLogs {
         let confirm = use_state(|| None::<Confirm>);
         let search_id = use_a11y();
 
-        use_mclogs_feedback(upload);
 
         let game = use_game_snapshot();
         let Some(_cluster) = use_cluster(self.cluster_id) else {
@@ -41,24 +40,31 @@ impl Component for ProcessLogs {
 
         let active = game.stage(self.cluster_id).is_some();
 
-        let body = if active {
-            let lines = game.logs_for(self.cluster_id);
-            let has_log = !lines.is_empty();
-            let visible = filter_lines(&lines, &search.read(), *level.read());
-
-            LogViewer::new("Game output", visible)
-                .streaming(true)
-                .header(viewer_header(search, level, confirm, has_log, search_id))
-                .into_element()
-        } else {
-            not_running()
-        };
-
         let output_path = try_cluster_logs(&logs_query)
             .unwrap_or_default()
             .into_iter()
             .find(|file| matches!(file.kind, LogKind::Game { .. }))
             .map(|file| file.path);
+
+        let body = if active {
+            let lines = game.logs_for(self.cluster_id);
+            let has_log = !lines.is_empty();
+            let visible = filter_lines(&lines, &search.read(), *level.read());
+
+            LogViewer::new(t("oneclient.cluster.process_logs.title"), visible)
+                .streaming(true)
+                .header(viewer_header(
+                    search,
+                    level,
+                    confirm,
+                    has_log,
+                    output_path.clone().filter(|_| has_log),
+                    search_id,
+                ))
+                .into_element()
+        } else {
+            not_running()
+        };
 
         cluster_content()
             .child(body)
@@ -112,8 +118,8 @@ fn not_running() -> Element {
         .center()
         .child(
             label()
-                .text("This cluster is not running.")
-                .font_size(14.)
+                .text(t("oneclient.cluster.process_logs.not_running"))
+                .font_size(text_size(14.))
                 .color(colors::fg_secondary()),
         )
         .into_element()

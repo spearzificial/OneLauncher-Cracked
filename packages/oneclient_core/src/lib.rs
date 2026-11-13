@@ -17,9 +17,11 @@ pub mod recovery;
 pub mod relocate;
 pub mod reporting;
 pub mod settings;
+pub mod sharing;
 pub mod simulate;
 mod state;
 pub mod storage;
+pub mod sync;
 pub mod tos;
 pub mod verify;
 pub mod versions;
@@ -41,13 +43,15 @@ pub use error::{LauncherError, LauncherResult, SentryExclusion};
 pub use game::{
     GameError, GameVersionInfo, GameVersionKind, LaunchedGame, get_loader_versions,
     get_loaders_for_version, get_version_ids, get_versions_for_loader, launch_cluster,
+    launch_cluster_with,
 };
 pub use images::ImageCacheStore;
 pub use migration::launchers::{
     ExternalDetection, ExternalImportReport, ExternalInstance, ExternalLauncher, FlaggedImportMod,
-    ImportAlternative, ImportChoices, InstanceArchive, ScreenedInstance, alternative_version_id,
-    detect_all as detect_external_launchers, detect_folder as detect_external_folder,
-    discard_instance_archive, import_instance as import_external_instance, is_instance_archive,
+    ImportAlternative, ImportChoices, InstanceArchive, ScreenedInstance, UnpublishedCheck,
+    UnpublishedFile, alternative_version_id, detect_all as detect_external_launchers,
+    detect_folder as detect_external_folder, discard_instance_archive, find_unpublished_mods,
+    import_instance as import_external_instance, instance_mods_stamp, is_instance_archive,
     open_instance_archive, same_folder as same_external_folder,
     screen_instances as screen_external_instances, sweep_instance_archives,
 };
@@ -56,8 +60,8 @@ pub use migration::{
     import_game_dir as import_migration_game_dir,
 };
 pub use oneclient_cluster::logs::{
-    LogFileInfo, LogKind, LogLevel, LogLine, LogsError, MclogsUploadResponse, ReadOptions,
-    delete_log_at, list_cluster_logs, read_log_at, upload_log_at,
+    LogFileInfo, LogKind, LogLevel, LogLine, LogTrim, LogsError, MclogsUploadResponse, ReadOptions,
+    delete_log_at, list_cluster_logs, log_exceeds_upload_limit, read_log_at, upload_log_at,
 };
 pub use oneclient_cluster::screenshots::{
     ScreenshotInfo, ScreenshotsError, delete_screenshot, list_cluster_screenshots,
@@ -72,7 +76,8 @@ pub use oneclient_content::bundles::{
     BundleFileType, BundleManifest, BundleOptionalPackage, BundleUpdateCheckResult,
     BundleWithUpdateStatus, BundlesManager, FileUpdateStatus, PendingOptionalMod,
     apply_bundle_updates, apply_bundle_updates_with, check_bundle_updates,
-    cluster_has_bundle_content, clusters_sharing_artifact, delete_artifact, effective_enabled,
+    cluster_has_bundle_content, clusters_sharing_artifact, clusters_sharing_global_folders,
+    delete_artifact, effective_enabled,
     get_bundles_with_update_status, install_bundle, install_cluster_bundles,
     install_package_from_bundle, list_cluster_bundle_overrides, on_user_remove_artifact,
     pending_optional_mods, remove_artifact_from_cluster, resolve_optional_mods,

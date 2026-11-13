@@ -39,27 +39,6 @@ impl LaunchBehaviour {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AppTheme {
-    #[default]
-    Dark,
-    Amoled,
-    Grey,
-    Light,
-    White,
-}
-
-impl AppTheme {
-    pub const ALL: [Self; 5] = [
-        Self::Dark,
-        Self::Amoled,
-        Self::Grey,
-        Self::Light,
-        Self::White,
-    ];
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct ViewState {
@@ -85,13 +64,15 @@ pub struct LauncherSettings {
     pub global_game_settings: GameSettingsProfile,
     pub allow_parallel_running_clusters: bool,
     pub launch_behaviour: LaunchBehaviour,
+    pub open_game_log_on_launch: bool,
     pub run_in_background: bool,
     pub show_tray_icon: bool,
     pub dynamic_background_enabled: bool,
     pub start_maximized: bool,
     pub animations_enabled: bool,
-    pub theme: AppTheme,
+    pub theme: String,
     pub accent_color: Option<String>,
+    pub language: Option<String>,
     pub view_states: BTreeMap<String, ViewState>,
     pub seen_onboarding: bool,
     pub skip_microsoft_java: bool,
@@ -101,11 +82,13 @@ pub struct LauncherSettings {
     pub declined_tos: bool,
     pub seen_versions: Vec<String>,
     pub seen_changelog_version: Option<String>,
+    pub acknowledged_disable_warnings: Vec<String>,
     pub pending_release_migrations: Vec<String>,
     pub modrinth_api_key: Option<String>,
     pub curseforge_api_key: Option<String>,
     pub custom_api_endpoint: Option<String>,
     pub custom_meta_url_base: Option<String>,
+    pub custom_plus_endpoint: Option<String>,
     pub data_dir: Option<PathBuf>,
     pub previous_data_dir: Option<PathBuf>,
 }
@@ -145,13 +128,15 @@ impl Default for LauncherSettings {
             global_game_settings: GameSettingsProfile::default_global_profile(),
             allow_parallel_running_clusters: true,
             launch_behaviour: LaunchBehaviour::default(),
+            open_game_log_on_launch: true,
             run_in_background: false,
             show_tray_icon: true,
             dynamic_background_enabled: true,
             start_maximized: false,
             animations_enabled: true,
-            theme: AppTheme::default(),
+            theme: "dark".to_string(),
             accent_color: None,
+            language: None,
             view_states: BTreeMap::new(),
             seen_onboarding: false,
             skip_microsoft_java: false,
@@ -161,11 +146,13 @@ impl Default for LauncherSettings {
             declined_tos: false,
             seen_versions: Vec::new(),
             seen_changelog_version: None,
+            acknowledged_disable_warnings: Vec::new(),
             pending_release_migrations: Vec::new(),
             modrinth_api_key: None,
             curseforge_api_key: None,
             custom_api_endpoint: None,
             custom_meta_url_base: None,
+            custom_plus_endpoint: None,
             data_dir: None,
             previous_data_dir: None,
         }

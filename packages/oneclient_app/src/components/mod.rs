@@ -24,11 +24,13 @@ mod file_drop;
 mod filter_menu;
 mod flagged_install_popup;
 mod generic_prompt;
+mod invite_join_popup;
 mod icons;
 mod instance_row;
 mod java_install_manager;
 mod java_prompt;
 mod link_confirm;
+mod lobby;
 mod local_image;
 mod log_viewer;
 mod markdown;
@@ -51,6 +53,7 @@ mod release_migration_popup;
 mod screenshot_viewer;
 mod scrollview;
 mod segmented_control;
+mod settings_files;
 mod spinner;
 mod splash_curtain;
 mod status_bar;
@@ -59,12 +62,16 @@ mod text_input;
 mod toasts;
 mod toggle;
 mod tooltip;
+mod unpublished_import_popup;
 mod update_prompt;
 pub mod upload_mclogs;
 mod version_art_gallery;
 mod version_card;
+mod warning_card;
 
 pub use cluster_menu::{ClusterContextMenu, ClusterMenuTarget};
+pub(crate) use lobby::modal;
+pub use lobby::{LobbyHeroChip, PartyTab, use_player_name, use_provide_lobby};
 pub use account_switcher::AccountSwitcher;
 pub use active_cluster_panel::ActiveClusterPanel;
 pub use asset_image::AssetImage;
@@ -72,7 +79,7 @@ pub use avatar::Avatar;
 pub use blocked_downloads_popup::BlockedDownloadsPopup;
 pub use bundle_choices_popup::BundleChoicesPopup;
 pub use bundled_install_warning::{BundledInstallWarning, PendingBundledInstall};
-pub use button::{Button, ButtonSize, ButtonVariant, copy_button, link_button, open_folder_button};
+pub use button::{Button, ButtonSize, ButtonVariant, copy_button, link_button, open_folder_button, sized_open_folder_button};
 pub use charts::{BarChart, PieChart, ValueUnit, slice_color};
 pub use checkbox::checkbox_labeled;
 pub use cluster_update_popup::ClusterUpdatePopup;
@@ -91,6 +98,7 @@ pub use filter_menu::{FilterMenu, FilterOption};
 pub use flagged_install_popup::FlaggedInstallPopup;
 pub(crate) use flagged_install_popup::explanation_panel;
 pub use generic_prompt::GenericPromptOverlay;
+pub use invite_join_popup::InviteJoinPopup;
 pub use icons::{Icon, IconTint, IconType};
 pub use instance_row::InstanceRow;
 pub use java_install_manager::JavaInstallManager;
@@ -104,11 +112,14 @@ pub use microsoft_java_prompt::MicrosoftJavaPromptOverlay;
 pub(crate) use microsoft_login::login_dialog;
 pub use microsoft_login::{MicrosoftLogin, use_microsoft_login};
 pub use modpack_confirm_popup::ModpackConfirmPopup;
-pub(crate) use navbar::window_controls;
+pub(crate) use navbar::{window_controls, window_controls_with};
 pub use navbar::{AppNavbar, OnboardingNavbar};
 pub use notifications::{ChevronToggle, NotificationCenter};
 pub use optional_mods_popup::OptionalModsPopup;
-pub use overlay_popup::{OVERLAY_BASE_LEVEL, OVERLAY_MAX_LEVEL, OverlayPopup, overlay_is_topmost};
+pub use overlay_popup::{
+    OVERLAY_BASE_LEVEL, OVERLAY_MAX_LEVEL, OverlayPopup, overlay_is_topmost, popup_surface,
+    use_open_level, use_popup_intro,
+};
 pub use package_delete_dialog::use_shared_delete;
 pub(crate) use package_row::{
     CARD_GRID_H, CARD_H, GRID_GAP, GRID_MIN_W, badge, bundled_delete_action, disable_request,
@@ -116,7 +127,8 @@ pub(crate) use package_row::{
     package_icon, pill, remote_icon, run_guarded, set_enabled_action, toggle_action,
 };
 pub use package_row::{
-    CardLayout, PackageEntry, PackageRow, github_badge, package_context_menu, provider_badge,
+    CardLayout, CopyStatus, PackageEntry, PackageRow, github_badge, package_context_menu,
+    parse_folder_pack_id, provider_badge,
 };
 pub use package_update_popup::PackageUpdatePopup;
 pub use pagination::Pagination;
@@ -128,6 +140,7 @@ pub use screenshot_viewer::{ScreenshotViewer, screenshot_context_menu};
 pub(crate) use scrollview::corrected_scroll;
 pub use scrollview::{LazySection, ScrollArea, ScrollAreaCtx};
 pub use segmented_control::{Segment, SegmentedControl};
+pub use settings_files::{FileChoice, settings_file_picker};
 pub use spinner::{Spinner, centered_spinner};
 pub use splash_curtain::SplashCurtain;
 pub use status_bar::StatusBar;
@@ -136,6 +149,9 @@ pub use text_input::{TextInput, validate_memory, validate_number};
 pub use toasts::Toasts;
 pub use toggle::{toggle, toggle_controlled};
 pub use tooltip::{TooltipHost, TooltipPlacement, use_provide_tooltips, use_tooltip_anchor};
+pub use unpublished_import_popup::UnpublishedImportPopup;
+pub(crate) use unpublished_import_popup::unpublished_rows;
 pub use update_prompt::UpdatePromptOverlay;
 pub use version_art_gallery::{GALLERY_COVER_EDGE, VersionArtGallery};
 pub use version_card::VersionCard;
+pub use warning_card::{caution_card, warning_card, warning_list};

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use freya::prelude::*;
 use oneclient_common::search::{MatchScore, SearchQuery};
 use oneclient_content::packages::{CachedPackageMeta, ContentType, ProviderId};
+use oneclient_core::clusters::Cluster;
 use oneclient_core::{
     BundleFileKind, BundleFileType, BundleWithUpdateStatus, FileUpdateStatus, LinkedArtifactInfo,
 };
@@ -17,6 +18,7 @@ use crate::hooks::{
     use_disable_confirm, use_disable_warnings, use_dispatch, use_essential_guard,
     use_game_snapshot, use_package_meta_batch, use_selection, use_view_state,
 };
+use crate::i18n::{t, tf};
 
 use super::folder_list::confirm_dialog;
 
@@ -280,6 +282,43 @@ pub fn bundle_packages(
     rows
 }
 
+pub fn folder_pack_rows(
+    packs: Vec<oneclient_core::game::FolderPack>,
+) -> impl Iterator<Item = PackageEntry> {
+    let enabled: std::collections::HashSet<String> = packs
+        .iter()
+        .filter(|pack| pack.enabled)
+        .map(|pack| pack.name.clone())
+        .collect();
+    packs.into_iter().map(move |pack| {
+        let id = if !pack.enabled && enabled.contains(&pack.name) {
+            format!("folder:{}/off", pack.name)
+        } else {
+            format!("folder:{}", pack.name)
+        };
+        let mut row = make_row(
+            id,
+            None,
+            ProviderId::Local,
+            0,
+            Vec::new(),
+            pack.enabled,
+            false,
+            false,
+            None,
+            None,
+            pack.name,
+            false,
+            false,
+            true,
+        );
+        row.installed = true;
+        row.version = Some(t("oneclient.cluster.package_manager.folder_pack").to_string());
+        row.description = pack.description.unwrap_or_default();
+        row
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn make_row(
     package_id: String,
@@ -336,18 +375,26 @@ fn make_row(
         update_available,
         hidden,
         opted_in,
-        shadowed: false,
-        outranked: false,
+        copy_status: None,
+        copies: Vec::new(),
         advanced: false,
         deleted: false,
         seen_status: installed_info.map(|i| i.seen_status).unwrap_or_default(),
         bisect_role: None,
         locked: false,
         modpack: None,
+        added_at: installed_info.and_then(|i| i.added_at.clone()),
+        published_at: installed_info.and_then(|i| i.published_at.clone()),
     }
 }
 
-const BUNDLED_MARKER: &str = "(bundled)";
+pub(super) fn noun_one(content_type: ContentType) -> &'static str {
+    match content_type {
+        ContentType::Shader => t("oneclient.cluster.package_manager.noun.shader.one"),
+        ContentType::ResourcePack => t("oneclient.cluster.package_manager.noun.resource_pack.one"),
+        _ => t("oneclient.cluster.package_manager.noun.mod.one"),
+    }
+}
 
 fn package_url(item: &PackageEntry, content_type: ContentType) -> Option<String> {
     match item.provider {
@@ -371,7 +418,10 @@ fn export_line(item: &PackageEntry, content_type: ContentType) -> String {
         .filter(|version| !version.is_empty())
         .map(|version| {
             if item.in_bundle() {
-                format!("{version} {BUNDLED_MARKER}")
+                tf(
+                    "oneclient.cluster.package_manager.export.bundled",
+                    &[&version],
+                )
             } else {
                 version
             }
@@ -383,9 +433,19 @@ fn export_line(item: &PackageEntry, content_type: ContentType) -> String {
     segments.extend(package_url(item, content_type).or_else(|| item.github_url.clone()));
     segments.extend(version);
     if !item.author.is_empty() {
-        segments.push(format!("by {}", item.author));
+        segments.push(tf(
+            "oneclient.cluster.package_manager.export.author",
+            &[&item.author],
+        ));
     }
-    segments.push(if item.enabled { "enabled" } else { "disabled" }.to_string());
+    segments.push(
+        if item.enabled {
+            t("oneclient.cluster.package_manager.export.enabled")
+        } else {
+            t("oneclient.cluster.package_manager.export.disabled")
+        }
+        .to_string(),
+    );
 
     format!("- {}", segments.join(" | "))
 }
@@ -398,13 +458,35 @@ fn export_rows(items: &[PackageEntry], hidden: HiddenFilter) -> Vec<PackageEntry
         .collect()
 }
 
-fn package_list_text(rows: &[PackageEntry], content_type: ContentType) -> String {
+fn list_header(cluster: &Cluster) -> String {
+    let loader = if cluster.mc_loader.is_modded() {
+        cluster.mc_loader.to_string()
+    } else {
+        "Vanilla".to_string()
+    };
+    let loader_version = cluster
+        .mc_loader_version
+        .as_deref()
+        .map_or_else(String::new, |version| format!(" {version}"));
+    format!("Minecraft {} · {loader}{loader_version}", cluster.mc_version)
+}
+
+fn package_list_text(
+    rows: &[PackageEntry],
+    content_type: ContentType,
+    header: Option<&str>,
+) -> String {
     let mut rows: Vec<&PackageEntry> = rows.iter().collect();
     rows.sort_by_key(|p| p.name.to_lowercase());
-    rows.iter()
+    let list = rows
+        .iter()
         .map(|row| export_line(row, content_type))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    match header {
+        Some(header) => format!("{header}\n\n{list}"),
+        None => list,
+    }
 }
 
 #[derive(Clone)]
@@ -419,11 +501,11 @@ pub(super) enum Tab {
 impl Tab {
     pub(super) fn label(&self) -> String {
         match self {
-            Tab::All => "All".to_string(),
+            Tab::All => t("oneclient.cluster.package_manager.tab.all").to_string(),
             Tab::Category(c) => c.clone(),
-            Tab::Browser => "Online".to_string(),
-            Tab::Local => "Local".to_string(),
-            Tab::Deleted => "Deleted".to_string(),
+            Tab::Browser => t("oneclient.cluster.package_manager.tab.browser").to_string(),
+            Tab::Local => t("oneclient.cluster.package_manager.tab.local").to_string(),
+            Tab::Deleted => t("oneclient.cluster.package_manager.tab.deleted").to_string(),
         }
     }
 
@@ -513,7 +595,7 @@ fn build_tabs(categories: &[String], items: &[PackageEntry], hidden: HiddenFilte
 /// the disable path re-runs this and can proceed without it.
 fn warm_dependencies(cluster_id: i64) {
     use_hook(move || {
-        spawn_forever(async move {
+        spawn_in_window(async move {
             let Ok(state) = crate::launcher::state() else {
                 return;
             };
@@ -580,7 +662,7 @@ impl Component for PackageManager {
 
         // Cleared once on mount so the rows already rendered keep their badges for this visit
         use_hook(|| {
-            spawn_forever(async move {
+            spawn_in_window(async move {
                 let Ok(state) = crate::launcher::state() else {
                     return;
                 };
@@ -736,6 +818,11 @@ impl Component for PackageManager {
             .filter(|p| p.installed && !p.in_bundle())
             .filter_map(|p| p.hash.clone())
             .collect();
+        let folder_deletable: Vec<(String, bool)> = chosen
+            .iter()
+            .filter_map(|p| p.folder_pack())
+            .map(|(name, enabled)| (name.to_string(), enabled))
+            .collect();
         let bundled_deletable: Vec<PackageEntry> = chosen
             .iter()
             .filter(|_| content_type == ContentType::Mod)
@@ -745,6 +832,7 @@ impl Component for PackageManager {
 
         let set_enabled: EventHandler<bool> = {
             let chosen = chosen.clone();
+            let dispatch = dispatch.clone();
             let warnings = disable_warnings(&warnings_query);
             (move |enabled: bool| {
                 if bisecting {
@@ -759,24 +847,37 @@ impl Component for PackageManager {
                 if actions.is_empty() {
                     return;
                 }
-                let name = match targets.as_slice() {
-                    [only] => only.name.clone(),
-                    _ => format!("{} {noun_plural}", targets.len()),
-                };
                 if enabled {
                     mutation.mutate(ClusterAction::Batch(actions));
                     return;
                 }
-                let targets: Vec<&PackageEntry> = targets
+                let (folders, targets): (Vec<&PackageEntry>, Vec<&PackageEntry>) = targets
                     .into_iter()
                     .filter(|p| toggle_action(p, cluster_id, false).is_some())
-                    .collect();
+                    .partition(|p| p.folder_pack().is_some());
+                if !folders.is_empty() {
+                    mutation.mutate(ClusterAction::Batch(
+                        folders
+                            .iter()
+                            .filter_map(|p| toggle_action(p, cluster_id, false))
+                            .collect(),
+                    ));
+                }
+                let name = match targets.as_slice() {
+                    [] => return,
+                    [only] => only.name.clone(),
+                    _ => tf(
+                        "oneclient.cluster.package_manager.count",
+                        &[&targets.len(), &noun_plural],
+                    ),
+                };
                 guard_disable(
                     disable_request(&targets, cluster_id, name),
                     &targets,
                     warnings.clone(),
                     guard,
                     pending_disable,
+                    dispatch.clone(),
                 );
             })
             .into()
@@ -786,35 +887,44 @@ impl Component for PackageManager {
             selection,
             order,
             count: chosen.len(),
-            deletable: deletable.len() + bundled_deletable.len(),
+            deletable: deletable.len() + folder_deletable.len() + bundled_deletable.len(),
             set_enabled,
             delete: (move |()| confirm_delete.set(true)).into(),
         };
 
         let delete_dialog = confirm_delete.read().then(|| {
-            let count = deletable.len() + bundled_deletable.len();
+            let count = deletable.len() + folder_deletable.len() + bundled_deletable.len();
             let noun = if count == 1 {
-                package_type
+                noun_one(content_type)
             } else {
                 noun_plural
             };
-            let shared = if shares_content == Some(true) {
-                format!(" Shared {noun_plural} are deleted from every cluster that uses them.")
-            } else {
-                String::new()
-            };
-            let body = match (deletable.is_empty(), bundled_deletable.is_empty()) {
-                (_, true) => format!("This can't be undone.{shared}"),
-                (true, false) => format!(
-                    "Bundled {noun_plural} are turned off and moved to the Deleted tab, where you can restore them."
+            let shared = shares_content == Some(true);
+            let body = match (deletable.is_empty(), bundled_deletable.is_empty(), shared) {
+                (_, true, false) => t("oneclient.cluster.package_manager.delete.body").to_string(),
+                (_, true, true) => tf(
+                    "oneclient.cluster.package_manager.delete.body.shared",
+                    &[&noun_plural],
                 ),
-                (false, false) => format!(
-                    "Bundled {noun_plural} are turned off and moved to the Deleted tab, where you can restore them. The rest can't be undone.{shared}"
+                (true, false, _) => tf(
+                    "oneclient.cluster.package_manager.delete.body.bundled",
+                    &[&noun_plural],
+                ),
+                (false, false, false) => tf(
+                    "oneclient.cluster.package_manager.delete.body.mixed",
+                    &[&noun_plural],
+                ),
+                (false, false, true) => tf(
+                    "oneclient.cluster.package_manager.delete.body.mixed_shared",
+                    &[&noun_plural, &noun_plural],
                 ),
             };
             let warnings = disable_warnings(&warnings_query);
             confirm_dialog(
-                format!("Delete {count} {noun}?"),
+                tf(
+                    "oneclient.cluster.package_manager.delete.title",
+                    &[&count, &noun],
+                ),
                 body,
                 move || confirm_delete.set(false),
                 move || {
@@ -825,6 +935,13 @@ impl Component for PackageManager {
                                 cluster_id,
                                 hash: hash.clone(),
                             })
+                            .chain(folder_deletable.iter().map(|(name, enabled)| {
+                                ClusterAction::RemoveFolderPack {
+                                    cluster_id,
+                                    name: name.clone(),
+                                    enabled: *enabled,
+                                }
+                            }))
                             .chain(
                                 bundled_deletable
                                     .iter()
@@ -838,7 +955,7 @@ impl Component for PackageManager {
                         &targets,
                         match (deletable.as_slice(), targets.as_slice()) {
                             ([], [only]) => only.name.clone(),
-                            _ => format!("{count} {noun}"),
+                            _ => tf("oneclient.cluster.package_manager.count", &[&count, &noun]),
                         },
                         EssentialGuardKind::Remove,
                         warnings.clone(),
@@ -875,6 +992,7 @@ impl Component for PackageManager {
                 &bulk,
                 noun_plural,
                 export_rows(&items, hidden),
+                cluster.as_ref().map(list_header),
             ))
             .child(
                 ContentBox::new(
@@ -981,6 +1099,7 @@ mod tests {
             display_version: None,
             provider: None,
             published_at: None,
+            added_at: None,
             seen_status: oneclient_core::SeenStatus::Seen,
             size_bytes: None,
         }
@@ -1054,12 +1173,49 @@ mod tests {
         assert_eq!(ids, ["kept"]);
         let kept = &exported[0];
         assert_eq!(
-            package_list_text(&exported, ContentType::Mod),
+            package_list_text(&exported, ContentType::Mod, None),
             format!(
                 "- {} | {} | enabled",
                 kept.name,
                 kept.bundle_name.clone().unwrap()
             )
         );
+    }
+
+    #[test]
+    fn date_sorts_put_newest_first_and_undated_last() {
+        let row = |name: &str, added: Option<&str>, published: Option<&str>| {
+            let mut row = make_row(
+                name.to_string(),
+                None,
+                ProviderId::Local,
+                0,
+                Vec::new(),
+                true,
+                false,
+                false,
+                None,
+                None,
+                name.to_string(),
+                false,
+                false,
+                true,
+            );
+            row.added_at = added.map(Into::into);
+            row.published_at = published.map(Into::into);
+            row
+        };
+        let (jan, oct) = (Some("2026-01-01T00:00:00Z"), Some("2026-10-01T00:00:00Z"));
+        let mut rows = vec![
+            row("undated", None, None),
+            row("old", jan, oct),
+            row("new", oct, jan),
+        ];
+        let names = |rows: &[PackageEntry]| rows.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+
+        SortMode::AddedDesc.sort(&mut rows);
+        assert_eq!(names(&rows), ["new", "old", "undated"]);
+        SortMode::UpdatedDesc.sort(&mut rows);
+        assert_eq!(names(&rows), ["old", "new", "undated"]);
     }
 }

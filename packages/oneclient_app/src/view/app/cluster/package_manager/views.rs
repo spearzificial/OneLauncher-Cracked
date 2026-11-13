@@ -8,13 +8,16 @@ use oneclient_content::packages::ContentType;
 use oneclient_core::settings::ViewLayout;
 
 use crate::components::{
-    Button, CardLayout, ChevronToggle, ContextMenu, FilterMenu, FilterOption, Icon, IconType,
-    LazySection, PackageEntry, PackageRow, ScrollArea, Segment, SegmentedControl, TextInput,
-    bundled_delete_action, package_context_menu, run_guarded, use_shared_delete,
+    Button, CardLayout, ChevronToggle, ContextMenu, CopyStatus, FilterMenu, FilterOption, Icon,
+    IconType, LazySection, OVERLAY_BASE_LEVEL, OverlayPopup, PackageEntry, PackageRow, ScrollArea,
+    Segment, SegmentedControl, TextInput, bundled_delete_action, package_context_menu,
+    parse_folder_pack_id, run_guarded, use_shared_delete,
 };
 use crate::hooks::{ClusterAction, Selection, use_cluster_mutation, use_dispatch};
+use crate::i18n::{t, tf};
 use crate::routes::Route;
-use crate::theme::colors;
+use crate::theme::{colors, rounded, rounded_px, text_size};
+use crate::ui::border_all_color;
 use crate::{Actions, utils};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -23,14 +26,18 @@ pub(super) enum SortMode {
     NameDesc,
     SizeAsc,
     SizeDesc,
+    AddedDesc,
+    UpdatedDesc,
 }
 
 impl SortMode {
-    const ALL: [SortMode; 4] = [
+    const ALL: [SortMode; 6] = [
         SortMode::NameAsc,
         SortMode::NameDesc,
         SortMode::SizeAsc,
         SortMode::SizeDesc,
+        SortMode::AddedDesc,
+        SortMode::UpdatedDesc,
     ];
 
     fn key(self) -> &'static str {
@@ -39,6 +46,8 @@ impl SortMode {
             SortMode::NameDesc => "name_desc",
             SortMode::SizeAsc => "size_asc",
             SortMode::SizeDesc => "size_desc",
+            SortMode::AddedDesc => "added_desc",
+            SortMode::UpdatedDesc => "updated_desc",
         }
     }
 
@@ -48,10 +57,12 @@ impl SortMode {
 
     fn label(self) -> &'static str {
         match self {
-            SortMode::NameAsc => "Name (A-Z)",
-            SortMode::NameDesc => "Name (Z-A)",
-            SortMode::SizeAsc => "Size (Smallest)",
-            SortMode::SizeDesc => "Size (Largest)",
+            SortMode::NameAsc => t("oneclient.cluster.package_manager.sort.name_asc"),
+            SortMode::NameDesc => t("oneclient.cluster.package_manager.sort.name_desc"),
+            SortMode::SizeAsc => t("oneclient.cluster.package_manager.sort.size_asc"),
+            SortMode::SizeDesc => t("oneclient.cluster.package_manager.sort.size_desc"),
+            SortMode::AddedDesc => t("oneclient.cluster.package_manager.sort.added_desc"),
+            SortMode::UpdatedDesc => t("oneclient.cluster.package_manager.sort.updated_desc"),
         }
     }
 
@@ -62,6 +73,13 @@ impl SortMode {
             SortMode::NameDesc => rows.sort_by_key(|p| std::cmp::Reverse(title(p))),
             SortMode::SizeAsc => rows.sort_by_key(|p| p.size),
             SortMode::SizeDesc => rows.sort_by_key(|p| std::cmp::Reverse(p.size)),
+            // Undated rows (not installed, or added before dates were kept) sink to the bottom
+            SortMode::AddedDesc => {
+                rows.sort_by_key(|p| (std::cmp::Reverse(p.added_at.clone()), title(p)))
+            }
+            SortMode::UpdatedDesc => {
+                rows.sort_by_key(|p| (std::cmp::Reverse(p.published_at.clone()), title(p)))
+            }
             _ => rows.sort_by_key(title),
         }
     }
@@ -97,9 +115,9 @@ impl EnabledFilter {
 
     fn label(self) -> &'static str {
         match self {
-            EnabledFilter::All => "All packages",
-            EnabledFilter::Enabled => "Enabled only",
-            EnabledFilter::Disabled => "Disabled only",
+            EnabledFilter::All => t("oneclient.cluster.package_manager.filter.show.all"),
+            EnabledFilter::Enabled => t("oneclient.cluster.package_manager.filter.show.enabled"),
+            EnabledFilter::Disabled => t("oneclient.cluster.package_manager.filter.show.disabled"),
         }
     }
 
@@ -137,8 +155,8 @@ impl HiddenFilter {
 
     fn label(self) -> &'static str {
         match self {
-            HiddenFilter::Hide => "Hide",
-            HiddenFilter::Show => "Show",
+            HiddenFilter::Hide => t("oneclient.cluster.package_manager.filter.hidden.hide"),
+            HiddenFilter::Show => t("oneclient.cluster.package_manager.filter.hidden.show"),
         }
     }
 
@@ -171,9 +189,15 @@ impl Bulk {
 
     fn toggle_all_label(&self) -> (IconType, &'static str) {
         if self.all_selected() {
-            (IconType::XClose, "Unselect all")
+            (
+                IconType::XClose,
+                t("oneclient.cluster.package_manager.select.unselect_all"),
+            )
         } else {
-            (IconType::Check, "Select all")
+            (
+                IconType::Check,
+                t("oneclient.cluster.package_manager.select.select_all"),
+            )
         }
     }
 
@@ -188,39 +212,54 @@ impl Bulk {
             Button::new()
                 .secondary()
                 .height(Size::px(34.))
-                .font_size(12.)
+                .font_size(text_size(12.))
                 .child(Icon::new(icon).size(15.))
                 .text(text)
         };
 
         vec![
             label()
-                .text(format!("{} selected", self.count))
-                .font_size(12.)
+                .text(tf(
+                    "oneclient.cluster.package_manager.select.count",
+                    &[&self.count],
+                ))
+                .font_size(text_size(12.))
                 .max_lines(1)
                 .color(colors::fg_secondary())
                 .into_element(),
             button(toggle_icon, toggle_label.to_string())
                 .on_press(move |_| selection.toggle_all(&order))
                 .into_element(),
-            button(IconType::CheckCircle, "Enable".to_string())
-                .enabled(self.count > 0)
-                .on_press(move |_| enable.call(true))
-                .into_element(),
-            button(IconType::Minus, "Disable".to_string())
-                .enabled(self.count > 0)
-                .on_press(move |_| disable.call(false))
-                .into_element(),
-            button(IconType::Trash01, format!("Delete ({})", self.deletable))
-                .danger()
-                .enabled(self.deletable > 0)
-                .on_press(move |_| delete.call(()))
-                .into_element(),
+            button(
+                IconType::CheckCircle,
+                t("oneclient.cluster.package_manager.select.enable").to_string(),
+            )
+            .enabled(self.count > 0)
+            .on_press(move |_| enable.call(true))
+            .into_element(),
+            button(
+                IconType::Minus,
+                t("oneclient.cluster.package_manager.select.disable").to_string(),
+            )
+            .enabled(self.count > 0)
+            .on_press(move |_| disable.call(false))
+            .into_element(),
+            button(
+                IconType::Trash01,
+                tf(
+                    "oneclient.cluster.package_manager.select.delete",
+                    &[&self.deletable],
+                ),
+            )
+            .danger()
+            .enabled(self.deletable > 0)
+            .on_press(move |_| delete.call(()))
+            .into_element(),
             Button::new()
                 .ghost()
                 .icon()
                 .height(Size::px(34.))
-                .tooltip("Exit select mode")
+                .tooltip(t("oneclient.cluster.package_manager.select.exit"))
                 .on_press(move |_| selection.exit())
                 .child(Icon::new(IconType::XClose).size(15.))
                 .into_element(),
@@ -236,32 +275,47 @@ impl Bulk {
         let (toggle_icon, toggle_label) = self.toggle_all_label();
 
         let (icon, text) = if selection.is_selected(&key) {
-            (IconType::XClose, "Unselect")
+            (
+                IconType::XClose,
+                t("oneclient.cluster.package_manager.select.unselect"),
+            )
         } else {
-            (IconType::Check, "Select")
+            (
+                IconType::Check,
+                t("oneclient.cluster.package_manager.select.select"),
+            )
         };
 
         let mut menu = ContextMenu::new(x, y)
-            .title(format!("{} selected", self.count))
+            .title(tf(
+                "oneclient.cluster.package_manager.select.count",
+                &[&self.count],
+            ))
             .action(icon, text, move |()| selection.toggle(key.clone()))
             .separator();
         if self.count > 0 {
             menu = menu
-                .action(IconType::CheckCircle, "Enable Selected", move |()| {
-                    enable.call(true)
-                })
-                .action(IconType::Minus, "Disable Selected", move |()| {
-                    disable.call(false)
-                })
+                .action(
+                    IconType::CheckCircle,
+                    t("oneclient.cluster.package_manager.select.enable_selected"),
+                    move |()| enable.call(true),
+                )
+                .action(
+                    IconType::Minus,
+                    t("oneclient.cluster.package_manager.select.disable_selected"),
+                    move |()| disable.call(false),
+                )
                 .separator();
         }
         menu = menu.action(toggle_icon, toggle_label, move |()| {
             selection.toggle_all(&order)
         });
         if self.count > 0 && !self.all_selected() {
-            menu = menu.action(IconType::XClose, "Clear selection", move |()| {
-                selection.clear()
-            });
+            menu = menu.action(
+                IconType::XClose,
+                t("oneclient.cluster.package_manager.select.clear"),
+                move |()| selection.clear(),
+            );
         }
 
         if self.deletable == 0 {
@@ -269,7 +323,10 @@ impl Bulk {
         }
         menu.separator().danger_action(
             IconType::Trash01,
-            format!("Delete {}", self.deletable),
+            tf(
+                "oneclient.cluster.package_manager.select.delete_count",
+                &[&self.deletable],
+            ),
             move |()| delete.call(()),
         )
     }
@@ -278,12 +335,36 @@ impl Bulk {
 const TOOLBAR_STACK_W: f32 = 640.;
 const TABS_ROW_H: f32 = 34.;
 
-fn tabs_scrollbar_theme() -> ScrollBarThemePartial {
-    ScrollBarThemePartial {
-        thumb_background: Some(colors::fg_secondary().with_a(120).into()),
-        hover_thumb_background: Some(colors::fg_secondary().with_a(190).into()),
-        active_thumb_background: Some(colors::fg_primary().into()),
-        ..Default::default()
+#[derive(PartialEq)]
+struct FilterTabs {
+    width: Size,
+    chips: Vec<Element>,
+}
+
+impl Component for FilterTabs {
+    fn render(&self) -> impl IntoElement {
+        let mut chips_w = use_state(|| 0f32);
+
+        ScrollArea::new()
+            .horizontal(*chips_w.read())
+            .show_scrollbar(false)
+            .width(self.width.clone())
+            .height(Size::px(TABS_ROW_H))
+            .child(
+                rect()
+                    .horizontal()
+                    .width(Size::auto())
+                    .height(Size::px(TABS_ROW_H))
+                    .cross_align(Alignment::Center)
+                    .spacing(6.)
+                    .on_sized(move |e: Event<SizedEventData>| {
+                        let w = e.area.width();
+                        if (*chips_w.peek() - w).abs() > 0.5 {
+                            chips_w.set(w);
+                        }
+                    })
+                    .children(self.chips.clone()),
+            )
     }
 }
 
@@ -307,6 +388,7 @@ pub(super) fn toolbar_bar(
     bulk: &Bulk,
     noun_plural: &'static str,
     export: Vec<PackageEntry>,
+    header: Option<String>,
 ) -> impl IntoElement {
     let local_tab = matches!(tabs.get(active_idx), Some(Tab::Local));
 
@@ -321,36 +403,24 @@ pub(super) fn toolbar_bar(
     });
 
     let mut top_corners = CornerRadius::new_all(0.);
-    top_corners.fill_top(12.);
+    top_corners.fill_top(rounded_px(12.));
 
     let measured = *toolbar_width.read();
     let stacked = measured > 0. && measured < TOOLBAR_STACK_W;
 
-    let filter_tabs = ScrollView::new()
-        .direction(Direction::Horizontal)
-        .invert_scroll_wheel(true)
-        .show_scrollbar(true)
-        .scrollbar(|context| ScrollBar::new(context).theme(tabs_scrollbar_theme()).into())
-        .width(if stacked {
+    let filter_tabs = FilterTabs {
+        width: if stacked {
             Size::fill()
         } else {
             Size::flex(1.0)
-        })
-        .height(Size::px(TABS_ROW_H))
-        .child(
-            rect()
-                .horizontal()
-                .width(Size::auto())
-                .height(Size::fill())
-                .cross_align(Alignment::Center)
-                .spacing(6.)
-                .children(chips),
-        )
-        .into_element();
+        },
+        chips: chips.collect(),
+    }
+    .into_element();
 
     let mut controls: Vec<Element> = vec![
         TextInput::new(search)
-            .placeholder("Search...")
+            .placeholder(t("oneclient.cluster.package_manager.search"))
             .width(Size::px(180.))
             .leading(
                 Icon::new(IconType::SearchMd)
@@ -375,29 +445,16 @@ pub(super) fn toolbar_bar(
         controls.push(copy_list_button(
             dispatch.clone(),
             export.len(),
-            package_type,
+            noun_one(content_type),
             noun_plural,
-            move || package_list_text(&export, content_type),
+            move || package_list_text(&export, content_type, header.as_deref()),
         ));
     }
-    let selection = bulk.selection;
-    controls.push(
-        Button::new()
-            .secondary()
-            .height(Size::px(34.))
-            .font_size(12.)
-            .enabled(!bulk.order.is_empty())
-            .tooltip("Select several to enable, disable or delete at once")
-            .on_press(move |_| selection.enter())
-            .child(Icon::new(IconType::Check).size(15.))
-            .text("Select")
-            .into_element(),
-    );
     controls.push(
         Button::new()
             .primary()
             .height(Size::px(34.))
-            .font_size(12.)
+            .font_size(text_size(12.))
             .on_press(move |_| {
                 if local_tab {
                     import_from_file(cluster_id, content_type, dispatch.clone());
@@ -414,9 +471,9 @@ pub(super) fn toolbar_bar(
                 .size(15.),
             )
             .text(if local_tab {
-                "Add from file"
+                t("oneclient.cluster.package_manager.add_from_file")
             } else {
-                "Add Content"
+                t("oneclient.cluster.package_manager.add_content")
             })
             .into_element(),
     );
@@ -495,16 +552,20 @@ pub(crate) fn copy_list_button(
             if let Err(err) = Clipboard::set(text()) {
                 tracing::warn!("clipboard copy failed: {err:?}");
                 dispatch
-                    .notify("Copy failed")
-                    .body(format!(
-                        "Could not copy your {noun_plural} to the clipboard."
+                    .notify(t("oneclient.cluster.package_manager.copy.failed.title"))
+                    .body(tf(
+                        "oneclient.cluster.package_manager.copy.failed.body",
+                        &[&noun_plural],
                     ))
                     .error()
                     .send();
             } else {
                 dispatch
-                    .notify("Copied to clipboard")
-                    .body(format!("{count} {noun} copied to your clipboard."))
+                    .notify(t("oneclient.cluster.package_manager.copy.done.title"))
+                    .body(tf(
+                        "oneclient.cluster.package_manager.copy.done.body",
+                        &[&count, &noun],
+                    ))
                     .info()
                     .icon(IconType::ClipboardCheck)
                     .send();
@@ -547,7 +608,7 @@ impl Component for CategoryChip {
             .height(Size::px(32.))
             .center()
             .padding(Gaps::new_symmetric(0., 12.))
-            .corner_radius(CornerRadius::new_all(8.))
+            .corner_radius(rounded(8.))
             .background(background)
             .border(crate::ui::border_all_color(
                 1.,
@@ -567,11 +628,11 @@ impl Component for CategoryChip {
             .child(
                 label()
                     .text(self.label.clone())
-                    .font_size(12.)
+                    .font_size(text_size(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .max_lines(1)
                     .color(if selected {
-                        Color::WHITE
+                        colors::on_brand()
                     } else {
                         colors::fg_primary()
                     }),
@@ -581,42 +642,51 @@ impl Component for CategoryChip {
 
 pub(super) fn running_notice(noun_plural: &'static str, content_type: ContentType) -> String {
     match content_type {
-        ContentType::ResourcePack => format!(
-            "Minecraft is running. New {noun_plural} usually go in right away, open Options → Resource Packs in game to turn them on. OneClient tells you when one has to wait for the next launch."
+        ContentType::ResourcePack => tf(
+            "oneclient.cluster.package_manager.notice.running.resource_pack",
+            &[&noun_plural],
         ),
-        ContentType::Shader => format!(
-            "Minecraft is running. New {noun_plural} usually go in right away, open the shader pack screen in game to turn them on. OneClient tells you when one has to wait for the next launch."
+        ContentType::Shader => tf(
+            "oneclient.cluster.package_manager.notice.running.shader",
+            &[&noun_plural],
         ),
-        _ => format!(
-            "Minecraft is running. Changes to your {noun_plural} are saved, and take effect the next time you launch this version."
+        _ => tf(
+            "oneclient.cluster.package_manager.notice.running",
+            &[&noun_plural],
         ),
     }
 }
 
 pub(super) fn bisect_notice(noun_plural: &'static str) -> String {
-    format!(
-        "A problem mod search is running, so {noun_plural} can't be switched on or off here. Use the panel above to stop it."
+    tf(
+        "oneclient.cluster.package_manager.notice.bisect",
+        &[&noun_plural],
     )
 }
 
 pub(super) fn global_notice(noun_plural: &'static str) -> String {
-    format!(
-        "These {noun_plural} are shared across all your OneClient clusters. Adding one here makes it available in all of them, and turning one off removes it from all of them."
+    tf(
+        "oneclient.cluster.package_manager.notice.global",
+        &[&noun_plural],
     )
 }
 
 pub(super) fn instance_only_notice(noun_plural: &'static str) -> String {
-    format!(
-        "These {noun_plural} belong to this instance alone. Adding one here does not touch your other instances."
+    tf(
+        "oneclient.cluster.package_manager.notice.instance_only",
+        &[&noun_plural],
     )
 }
 
 pub(super) fn essential_notice(names: &[&'static str]) -> String {
     match names {
-        [only] => format!("{only} is turned off, so its features will not work in game."),
-        _ => format!(
-            "{} are turned off, so their features will not work in game.",
-            names.join(", ")
+        [only] => tf(
+            "oneclient.cluster.package_manager.notice.essential.one",
+            &[only],
+        ),
+        _ => tf(
+            "oneclient.cluster.package_manager.notice.essential.other",
+            &[&names.join(", ")],
         ),
     }
 }
@@ -630,7 +700,7 @@ pub(crate) fn notice_bar(text: String) -> Element {
         .spacing(10.)
         .margin(Gaps::new(0., 0., 8., 0.))
         .padding(Gaps::new_symmetric(9., 12.))
-        .corner_radius(CornerRadius::new_all(10.))
+        .corner_radius(rounded(10.))
         .background(colors::brand().with_a(30))
         .border(crate::ui::border_all_color(1., colors::brand().with_a(90)))
         .child(
@@ -641,7 +711,7 @@ pub(crate) fn notice_bar(text: String) -> Element {
         .child(
             label()
                 .text(text)
-                .font_size(12.)
+                .font_size(text_size(12.))
                 .width(Size::flex(1.0))
                 .color(colors::fg_secondary()),
         )
@@ -662,7 +732,7 @@ fn filter_button(
 
     FilterMenu::new(active)
         .section(
-            "Sort by",
+            t("oneclient.cluster.package_manager.filter.sort.title"),
             SortMode::ALL.map(|mode| {
                 FilterOption::new(mode.label(), mode == current_sort, move |()| {
                     sort.set(Some(mode.key().to_string()));
@@ -670,7 +740,7 @@ fn filter_button(
             }),
         )
         .section(
-            "Show",
+            t("oneclient.cluster.package_manager.filter.show.title"),
             EnabledFilter::ALL.map(|filter| {
                 FilterOption::new(filter.label(), filter == show, move |()| {
                     filters
@@ -680,7 +750,7 @@ fn filter_button(
             }),
         )
         .section(
-            "Hidden packages",
+            t("oneclient.cluster.package_manager.filter.hidden.title"),
             HiddenFilter::ALL.map(|filter| {
                 FilterOption::new(filter.label(), filter == hidden, move |()| {
                     filters
@@ -694,7 +764,7 @@ fn filter_button(
 fn import_from_file(cluster_id: i64, content_type: ContentType, dispatch: Actions) {
     spawn(async move {
         if let Some(handles) = rfd::AsyncFileDialog::new()
-            .set_title("Select files to import")
+            .set_title(t("oneclient.cluster.package_manager.import.picker_title"))
             .pick_files()
             .await
         {
@@ -718,7 +788,7 @@ fn add_from_file_button(
         .primary()
         .on_press(move |_| import_from_file(cluster_id, content_type, dispatch.clone()))
         .child(Icon::new(IconType::FilePlus02).size(14.))
-        .text("Add from file")
+        .text(t("oneclient.cluster.package_manager.add_from_file"))
 }
 
 fn open_browser(cluster_id: i64, package_type: &'static str) {
@@ -734,7 +804,7 @@ fn browse_button(cluster_id: i64, package_type: &'static str) -> impl IntoElemen
         .primary()
         .on_press(move |_| open_browser(cluster_id, package_type))
         .child(Icon::new(IconType::SearchMd).size(14.))
-        .text("Browse Content")
+        .text(t("oneclient.cluster.package_manager.browse_content"))
 }
 
 #[derive(Clone, PartialEq)]
@@ -784,7 +854,7 @@ impl Component for SectionHeader {
             .cross_align(Alignment::Center)
             .spacing(8.)
             .padding(Gaps::new_symmetric(0., 12.))
-            .corner_radius(CornerRadius::new_all(10.))
+            .corner_radius(rounded(10.))
             .background(if interactive && *hovered.read() {
                 colors::ghost_overlay_hover()
             } else {
@@ -800,14 +870,14 @@ impl Component for SectionHeader {
             .child(
                 label()
                     .text(self.label)
-                    .font_size(13.)
+                    .font_size(text_size(13.))
                     .font_weight(FontWeight::SEMI_BOLD)
                     .color(colors::fg_primary()),
             )
             .child(
                 label()
                     .text(self.count.to_string())
-                    .font_size(12.)
+                    .font_size(text_size(12.))
                     .color(colors::fg_secondary()),
             )
     }
@@ -885,9 +955,18 @@ impl Component for ContentBox {
         let guard = use_essential_guard();
         let warnings_query = use_disable_warnings();
         let mut menu = use_state(|| None::<(f32, f32, PackageEntry)>);
-        let (on_delete, delete_dialog) = use_shared_delete(cluster_id, move |(_, hash)| {
-            cluster.mutate(ClusterAction::RemoveArtifact { cluster_id, hash });
-        });
+        let mut copies_of = use_state(|| None::<String>);
+        let (on_delete, delete_dialog) =
+            use_shared_delete(cluster_id, move |(_, hash): (String, String)| {
+                cluster.mutate(match parse_folder_pack_id(&hash) {
+                    Some((name, enabled)) => ClusterAction::RemoveFolderPack {
+                        cluster_id,
+                        name: name.to_string(),
+                        enabled,
+                    },
+                    None => ClusterAction::RemoveArtifact { cluster_id, hash },
+                });
+            });
 
         let bulk = self.bulk.clone();
         let selection = bulk.selection;
@@ -908,12 +987,14 @@ impl Component for ContentBox {
                 let is_selected = selected[i];
                 let order = order.clone();
                 let click_key = key.clone();
+                let copies_key = key.clone();
                 PackageRow::new(item, cluster_id, package_type)
                     .layout(layout)
                     .selection(is_selected, selecting, move |()| {
                         selection.click(click_key.clone(), &order)
                     })
                     .on_context(move |(x, y)| menu.set(Some((x, y, for_menu.clone()))))
+                    .on_copies(move |()| copies_of.set(Some(copies_key.clone())))
                     .key(key)
                     .into_element()
             }
@@ -949,12 +1030,78 @@ impl Component for ContentBox {
                     row,
                     move |_| {
                         SectionHeader {
-                            label: "Advanced",
+                            label: t("oneclient.cluster.package_manager.advanced"),
                             count: advanced_count,
                             section,
                         }
                         .into_element()
                     },
+                )
+                .into_element()
+        });
+
+        let copies_target = copies_of
+            .read()
+            .as_ref()
+            .and_then(|key| items.iter().find(|item| &item.package_id == key))
+            .filter(|item| !item.copies.is_empty())
+            .cloned();
+        let copies_open = copies_target.is_some();
+        let copies_popup = copies_target.map(|item| {
+            let mut loaded = item.clone();
+            if item.copies.iter().any(|copy| copy.copy_status.is_some()) {
+                loaded.copy_status = Some(CopyStatus::Loaded);
+            }
+            let rows = std::iter::once(loaded)
+                .chain(item.copies.iter().cloned())
+                .map(|entry| {
+                    let for_menu = entry.clone();
+                    let key = entry.package_id.clone();
+                    rect()
+                        .width(Size::fill())
+                        .height(Size::px(CARD_H))
+                        .child(
+                            PackageRow::new(entry, cluster_id, package_type)
+                                .on_context(move |(x, y)| menu.set(Some((x, y, for_menu.clone()))))
+                                .key(key),
+                        )
+                        .into_element()
+                });
+            OverlayPopup::new()
+                .on_close(move |_| copies_of.set(None))
+                .child(
+                    rect()
+                        .width(Size::window_percent(100.))
+                        .height(Size::window_percent(100.))
+                        .center()
+                        .child(
+                            rect()
+                                .vertical()
+                                .width(Size::px(720.))
+                                .max_width(Size::window_percent(90.))
+                                .spacing(CARD_SPACING)
+                                .padding(Gaps::new_all(20.))
+                                .corner_radius(rounded(14.))
+                                .background(colors::page_elevated())
+                                .border(border_all_color(1., colors::component_border()))
+                                .child(
+                                    label()
+                                        .text(tf(
+                                            "oneclient.cluster.package_manager.copies.title",
+                                            &[&(item.copies.len() + 1), &item.name],
+                                        ))
+                                        .font_size(text_size(16.))
+                                        .font_weight(FontWeight::SEMI_BOLD)
+                                        .color(colors::fg_strong()),
+                                )
+                                .child(
+                                    label()
+                                        .text(t("oneclient.cluster.package_manager.copies.body"))
+                                        .font_size(text_size(12.))
+                                        .color(colors::fg_secondary()),
+                                )
+                                .children(rows),
+                        ),
                 )
                 .into_element()
         });
@@ -996,7 +1143,10 @@ impl Component for ContentBox {
                     (move |()| selection.toggle(key.clone())).into(),
                 )
             };
-            menu_for.on_close(move |_| menu.set(None)).into_element()
+            menu_for
+                .on_close(move |_| menu.set(None))
+                .overlay_level(OVERLAY_BASE_LEVEL + if copies_open { 3 } else { 0 })
+                .into_element()
         });
 
         let empty = (count == 0).then(|| match kind {
@@ -1011,7 +1161,7 @@ impl Component for ContentBox {
         });
 
         let mut bottom_corners = CornerRadius::new_all(0.);
-        bottom_corners.fill_bottom(12.);
+        bottom_corners.fill_bottom(rounded_px(12.));
 
         // File drops are handled window-wide by the app shell so this box does not claim them
         rect()
@@ -1031,6 +1181,7 @@ impl Component for ContentBox {
                     .height(Size::flex(1.0))
                     .child(empty)
             }))
+            .maybe_child(copies_popup)
             .maybe_child(menu_overlay)
             .maybe_child(delete_dialog)
     }
@@ -1050,23 +1201,26 @@ pub(crate) fn empty_shell(icon: IconType) -> Rect {
 pub(crate) fn empty_title(text: impl Into<String>) -> impl IntoElement {
     label()
         .text(text.into())
-        .font_size(14.)
+        .font_size(text_size(14.))
         .color(colors::fg_secondary())
 }
 
 pub(crate) fn empty_hint(text: impl Into<String>) -> impl IntoElement {
     label()
         .text(text.into())
-        .font_size(12.)
+        .font_size(text_size(12.))
         .color(colors::fg_secondary())
 }
 
 fn empty_state(noun_plural: &'static str) -> impl IntoElement {
     empty_shell(IconType::DotsGrid)
-        .child(empty_title(format!("No {noun_plural} here yet.")))
-        .child(empty_hint(
-            "Add one from a file or browse provider content.",
-        ))
+        .child(empty_title(tf(
+            "oneclient.cluster.package_manager.empty.title",
+            &[&noun_plural],
+        )))
+        .child(empty_hint(t(
+            "oneclient.cluster.package_manager.empty.hint",
+        )))
         .into_element()
 }
 
@@ -1074,12 +1228,18 @@ fn empty_state(noun_plural: &'static str) -> impl IntoElement {
 fn search_empty(noun_plural: &'static str, scope: Option<&str>) -> impl IntoElement {
     let (title, hint) = match scope {
         Some(tab) => (
-            format!("No {noun_plural} in \"{tab}\" match your search."),
-            "Try a different term, or search from the All tab.",
+            tf(
+                "oneclient.cluster.package_manager.search_empty.scoped.title",
+                &[&noun_plural, &tab],
+            ),
+            t("oneclient.cluster.package_manager.search_empty.scoped.hint"),
         ),
         None => (
-            format!("No {noun_plural} match your search."),
-            "Try a different term.",
+            tf(
+                "oneclient.cluster.package_manager.search_empty.title",
+                &[&noun_plural],
+            ),
+            t("oneclient.cluster.package_manager.search_empty.hint"),
         ),
     };
 
@@ -1091,10 +1251,12 @@ fn search_empty(noun_plural: &'static str, scope: Option<&str>) -> impl IntoElem
 
 fn browser_empty(cluster_id: i64, package_type: &'static str) -> impl IntoElement {
     empty_shell(IconType::SearchMd)
-        .child(empty_title("No content installed from the browser."))
-        .child(empty_hint(
-            "Browse providers to add mods, resource packs and more.",
-        ))
+        .child(empty_title(t(
+            "oneclient.cluster.package_manager.browser_empty.title",
+        )))
+        .child(empty_hint(t(
+            "oneclient.cluster.package_manager.browser_empty.hint",
+        )))
         .child(rect().height(Size::px(6.)))
         .child(browse_button(cluster_id, package_type))
         .into_element()
@@ -1109,11 +1271,14 @@ fn local_empty(
     let is_wayland = utils::is_wayland();
 
     empty_shell(IconType::FilePlus02)
-        .child(empty_title(format!("No local {noun_plural} yet.")))
+        .child(empty_title(tf(
+            "oneclient.cluster.package_manager.local_empty.title",
+            &[&noun_plural],
+        )))
         .maybe(!is_wayland, |e| {
-            e.child(empty_hint(
-                "Tip: drag files onto the window to install them.",
-            ))
+            e.child(empty_hint(t(
+                "oneclient.cluster.package_manager.local_empty.hint",
+            )))
         })
         .child(rect().height(Size::px(6.)))
         .child(add_from_file_button(cluster_id, content_type, dispatch))

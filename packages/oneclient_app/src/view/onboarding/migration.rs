@@ -7,11 +7,12 @@ use crate::hooks::{
     ClusterBundles, migration_detection, onboarding_bundles_items, use_migration,
     use_onboarding_bundles, use_onboarding_selection,
 };
+use crate::i18n::{t, tf};
 use crate::routes::Route;
-use crate::theme::colors;
+use crate::theme::{colors, rounded, text_size};
 use crate::ui::border_all_color;
 use crate::view::onboarding::{
-    choice_row, onboarding_illustration, onboarding_slide, step_heading,
+    choice_row_sized, onboarding_illustration, onboarding_slide, step_heading,
 };
 
 fn migrated_categories(source: &[SourceInstance]) -> Vec<String> {
@@ -68,20 +69,13 @@ impl Component for OnboardingMigration {
 
         let (title, subtitle) = if is_vanilla {
             (
-                "Bring over your Minecraft files",
-                "We found a Minecraft installation on this PC. We can copy your worlds, \
-                 settings, screenshots and servers over. Mods, resource packs and shaders stay \
-                 behind; OneClient manages those for you."
-                    .to_string(),
+                t("oneclient.onboarding.migration.vanilla.title"),
+                t("oneclient.onboarding.migration.vanilla.subtitle").to_string(),
             )
         } else {
             (
-                "Bring over your setup",
-                format!(
-                    "We found data from your previous {source_name} install. Your installed \
-                     categories are reselected automatically. Optionally, pick one version to \
-                     copy its files (worlds, config, and packs)."
-                ),
+                t("oneclient.onboarding.migration.title"),
+                tf("oneclient.onboarding.migration.subtitle", &[&source_name]),
             )
         };
         let heading = step_heading(title, &subtitle);
@@ -94,11 +88,11 @@ impl Component for OnboardingMigration {
             // "Don't import files" is the default choice pinned above the list
             .maybe_child(any_importable.then(|| {
                 import_choice_card(
-                    "Don't import files",
+                    t("oneclient.onboarding.migration.skip.title"),
                     if is_vanilla {
-                        "Start fresh. Nothing is copied over."
+                        t("oneclient.onboarding.migration.skip.vanilla")
                     } else {
-                        "Start fresh. Only your bundle selection carries over."
+                        t("oneclient.onboarding.migration.skip.description")
                     },
                     None,
                     chosen_folder.is_none(),
@@ -132,11 +126,7 @@ impl Component for OnboardingMigration {
                             .height(Size::fill())
                             .center()
                             .padding(Gaps::new_all(48.))
-                            .child(onboarding_illustration(if is_vanilla {
-                                IconType::FolderDownload
-                            } else {
-                                IconType::ClockRewind
-                            })),
+                            .child(onboarding_illustration(IconType::OnboardingMigration)),
                     )
                     .child(
                         rect()
@@ -178,8 +168,8 @@ fn import_body(
             .unwrap_or_default();
 
         return import_choice_card(
-            "Copy my Minecraft files",
-            "Worlds, settings, screenshots and servers move to your shared game directory.",
+            t("oneclient.onboarding.migration.vanilla.copy.title"),
+            t("oneclient.onboarding.migration.vanilla.copy.description"),
             None,
             chosen_folder.is_some(),
             move |_| import_folder.set(Some(folder.clone())),
@@ -210,8 +200,8 @@ fn import_body(
         .spacing(10.)
         .child(
             label()
-                .text("Detected versions")
-                .font_size(13.)
+                .text(t("oneclient.onboarding.migration.detected_versions"))
+                .font_size(text_size(13.))
                 .font_weight(FontWeight::MEDIUM)
                 .color(colors::fg_secondary()),
         )
@@ -238,7 +228,7 @@ fn version_card(
     let mut on_select = on_select;
 
     let categories = if instance.categories.is_empty() {
-        "No bundle categories".to_string()
+        t("oneclient.onboarding.migration.no_categories").to_string()
     } else {
         instance.categories.join(", ")
     };
@@ -264,29 +254,46 @@ fn version_card(
                 .child(
                     label()
                         .text(instance.folder_name.clone())
-                        .font_size(14.)
+                        .font_size(text_size(14.))
                         .font_weight(FontWeight::MEDIUM)
-                        .color(colors::fg_primary()),
+                        .color(if selected {
+                            colors::on_brand()
+                        } else {
+                            colors::fg_primary()
+                        }),
                 )
-                .child(label().text(subtitle).font_size(11.).color(if selected {
-                    colors::fg_primary()
-                } else {
-                    colors::fg_secondary()
-                }))
-                .child(label().text(categories).font_size(11.).color(if selected {
-                    colors::fg_primary()
-                } else {
-                    colors::fg_secondary()
-                })),
+                .child(
+                    label()
+                        .text(subtitle)
+                        .font_size(text_size(11.))
+                        .color(if selected {
+                            colors::on_brand()
+                        } else {
+                            colors::fg_secondary()
+                        }),
+                )
+                .child(
+                    label()
+                        .text(categories)
+                        .font_size(text_size(11.))
+                        .color(if selected {
+                            colors::on_brand()
+                        } else {
+                            colors::fg_secondary()
+                        }),
+                ),
         )
         // Selection affordance only when the instance actually has files
         .maybe_child(importable.then(|| {
             if selected {
-                Icon::new(IconType::Check).size(18.).into_element()
+                Icon::new(IconType::Check)
+                    .size(18.)
+                    .color(colors::on_brand())
+                    .into_element()
             } else {
                 label()
-                    .text("Import files")
-                    .font_size(12.)
+                    .text(t("oneclient.onboarding.migration.import_files"))
+                    .font_size(text_size(12.))
                     .color(colors::fg_secondary())
                     .into_element()
             }
@@ -297,7 +304,7 @@ fn version_card(
         .width(Size::fill())
         .spacing(12.)
         .padding(Gaps::new_symmetric(12., 14.))
-        .corner_radius(CornerRadius::new_all(10.))
+        .corner_radius(rounded(10.))
         .background(bg)
         .border(border_all_color(1., border_color))
         .child(header);
@@ -316,22 +323,26 @@ fn version_card(
             .spacing(6.)
             .child(
                 label()
-                    .text("Where should these files go?")
-                    .font_size(12.)
-                    .color(colors::fg_primary()),
+                    .text(t("oneclient.onboarding.migration.target.title"))
+                    .font_size(text_size(12.))
+                    .color(colors::on_brand()),
             )
-            .child(choice_row(
-                "Shared game directory",
-                "Available to every version.",
+            .child(choice_row_sized(
+                t("oneclient.onboarding.migration.target.shared.title"),
+                t("oneclient.onboarding.migration.target.shared.description"),
                 !dedicated,
+                Size::auto(),
+                colors::on_brand(),
                 move |_| import_dedicated.set(false),
             ));
 
         if dedicated_available {
-            targets = targets.child(choice_row(
-                "This version only",
-                "Keep the files isolated to the matching version.",
+            targets = targets.child(choice_row_sized(
+                t("oneclient.onboarding.migration.target.dedicated.title"),
+                t("oneclient.onboarding.migration.target.dedicated.description"),
                 dedicated,
+                Size::auto(),
+                colors::on_brand(),
                 move |_| import_dedicated.set(true),
             ));
         }
@@ -364,7 +375,7 @@ fn import_choice_card(
         .cross_align(Alignment::Center)
         .spacing(10.)
         .padding(Gaps::new_symmetric(12., 14.))
-        .corner_radius(CornerRadius::new_all(10.))
+        .corner_radius(rounded(10.))
         .background(bg)
         .border(border_all_color(1., border_color))
         .a11y_role(AccessibilityRole::Button)
@@ -378,16 +389,20 @@ fn import_choice_card(
                 .child(
                     label()
                         .text(title.to_string())
-                        .font_size(14.)
+                        .font_size(text_size(14.))
                         .font_weight(FontWeight::MEDIUM)
-                        .color(colors::fg_primary()),
+                        .color(if active {
+                            colors::on_brand()
+                        } else {
+                            colors::fg_primary()
+                        }),
                 )
                 .child(
                     label()
                         .text(subtitle.to_string())
-                        .font_size(11.)
+                        .font_size(text_size(11.))
                         .color(if active {
-                            colors::fg_primary()
+                            colors::on_brand()
                         } else {
                             colors::fg_secondary()
                         }),
@@ -395,7 +410,11 @@ fn import_choice_card(
         )
         .maybe_child(
             active
-                .then(|| Icon::new(IconType::Check).size(16.))
+                .then(|| {
+                    Icon::new(IconType::Check)
+                        .size(16.)
+                        .color(colors::on_brand())
+                })
                 .or_else(|| trailing.map(|i| Icon::new(i).size(16.))),
         )
         .into_element()
@@ -418,7 +437,7 @@ fn migration_nav(next_enabled: bool, on_next: impl FnMut() + 'static) -> impl In
                 .on_press(move |_| {
                     let _ = RouterContext::get().replace(Route::OnboardingTerms {});
                 })
-                .text("Back"),
+                .text(t("oneclient.common.back")),
         )
         .child(
             Button::new()
@@ -426,7 +445,7 @@ fn migration_nav(next_enabled: bool, on_next: impl FnMut() + 'static) -> impl In
                 .width(Size::px(140.))
                 .enabled(next_enabled)
                 .on_press(move |_| on_next())
-                .text("Next")
+                .text(t("oneclient.common.next"))
                 .child(Icon::new(IconType::ArrowRight).size(16.)),
         )
         .into_element()

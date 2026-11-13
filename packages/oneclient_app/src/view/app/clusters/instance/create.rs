@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use freya::prelude::*;
+use oneclient_common::GameLoader;
 use freya::router::RouterContext;
 use oneclient_core::GameVersionKind;
 use oneclient_core::clusters::{ClusterKind, ModpackSource};
@@ -17,6 +18,7 @@ use crate::hooks::{
     ClusterAction, settled_or_loading, use_active_cluster_id, use_cluster_mutation, use_clusters,
     use_dispatch,
 };
+use crate::i18n::{t, tf};
 use crate::utils::default_cluster;
 
 const MODPACK_BROWSE_TYPE: &str = "modpack";
@@ -38,7 +40,14 @@ fn create_action(wizard: Wizard, picks: &Picks) -> Option<ClusterAction> {
         cover_source: wizard.details.cover.read().clone(),
         bundles: (picks.kind == ClusterKind::OneClient && picks.bundles.loaded)
             .then(|| picks.bundles.taken()),
+        require_bundles: false,
         dedicated: picks.kind == ClusterKind::OneClient && picks.folder == FolderChoice::Dedicated,
+        shared_group: match &picks.folder {
+            FolderChoice::Custom(group) if picks.kind == ClusterKind::OneClient => {
+                Some(group.clone())
+            }
+            _ => None,
+        },
     })
 }
 
@@ -49,9 +58,9 @@ fn wizard_rail(wizard: Wizard, picks: &Picks) -> Element {
     // The import creates one instance per pick, named after each source, so
     // the suggested name of a version nobody chose means nothing here
     let title = if picks.choice == TypeChoice::Import {
-        "Import instances".to_string()
+        t("oneclient.clusters.instance.create.title.import").to_string()
     } else if picks.name.trim().is_empty() {
-        "New instance".to_string()
+        t("oneclient.clusters.instance.create.title.new").to_string()
     } else {
         picks.name.clone()
     };
@@ -66,10 +75,19 @@ fn wizard_rail(wizard: Wizard, picks: &Picks) -> Element {
                 Some(version) => format!("{version} · {}", picks.loader_label()),
                 None => picks.loader_label(),
             },
-            TypeChoice::Modpack => "Modpack".to_string(),
+            TypeChoice::Modpack => {
+                t("oneclient.clusters.instance.create.subtitle.modpack").to_string()
+            }
             TypeChoice::Import => match picks.import_source {
-                ImportSource::File => "From a file".to_string(),
-                ImportSource::Launcher => "From Prism, MultiMC or the Modrinth App".to_string(),
+                ImportSource::File => {
+                    t("oneclient.clusters.instance.create.subtitle.file").to_string()
+                }
+                ImportSource::Code => {
+                    t("oneclient.clusters.instance.create.subtitle.code").to_string()
+                }
+                ImportSource::Launcher => {
+                    t("oneclient.clusters.instance.create.subtitle.launcher").to_string()
+                }
             },
         }
     } else {
@@ -120,30 +138,64 @@ fn wizard_rail(wizard: Wizard, picks: &Picks) -> Element {
 #[derive(PartialEq)]
 pub struct CreateInstanceModal {
     on_close: EventHandler<()>,
+    prefill: Option<(String, GameLoader)>,
+    invite: Option<i32>,
 }
 
 impl CreateInstanceModal {
     pub fn new(on_close: impl Into<EventHandler<()>>) -> Self {
         Self {
             on_close: on_close.into(),
+            prefill: None,
+            invite: None,
         }
+    }
+
+    pub fn prefill(mut self, version: String, loader: GameLoader) -> Self {
+        self.prefill = Some((version, loader));
+        self
+    }
+
+    pub fn join_invite(mut self, invite_id: i32) -> Self {
+        self.invite = Some(invite_id);
+        self
     }
 }
 
 impl Component for CreateInstanceModal {
     fn render(&self) -> impl IntoElement {
         let mutation = use_cluster_mutation();
+        let prefilled = self.prefill.is_some();
+        let prefill_version = self.prefill.as_ref().map(|(version, _)| version.clone());
+        let prefill_loader = self
+            .prefill
+            .as_ref()
+            .map_or(LoaderChoice::Fabric, |(_, loader)| LoaderChoice::of(*loader));
         let wizard = Wizard {
+            exact_loader: self.prefill.as_ref().map(|(_, loader)| *loader),
             step: use_state(|| 0usize),
-            choice: use_state(|| TypeChoice::OneClient),
-            version: use_state(|| None::<String>),
-            filter: use_state(|| kind_bit(GameVersionKind::Release)),
+            choice: use_state(|| {
+                if prefilled {
+                    TypeChoice::Scratch
+                } else {
+                    TypeChoice::OneClient
+                }
+            }),
+            version: use_state(|| prefill_version),
+            filter: use_state(|| {
+                if prefilled {
+                    u8::MAX
+                } else {
+                    kind_bit(GameVersionKind::Release)
+                }
+            }),
             query: use_state(String::new),
-            loader: use_state(|| LoaderChoice::Fabric),
+            loader: use_state(|| prefill_loader),
             loader_version: use_state(|| None::<String>),
             declined: use_state(|| None::<HashSet<String>>),
             modpack_origin: use_state(|| ModpackOrigin::Browse),
             import_source: use_state(|| ImportSource::File),
+            share_code: use_state(String::new),
             import_chosen: use_state(Vec::new),
             import_extra: use_state(Vec::new),
             import_mode: use_state(|| ImportMode::AsIs),
@@ -171,16 +223,29 @@ impl Component for CreateInstanceModal {
             Vec::new()
         };
         let friend = picks.step == Step::ImportSource && picks.import_source == ImportSource::File;
+        let by_code = picks.step == Step::ImportSource && picks.import_source == ImportSource::Code;
+        let share_code = picks.share_code.clone();
         let origin = picks.modpack_origin;
         let index = picks.index;
         let mut step = wizard.step;
         let mut query = wizard.query;
 
+        let invite = crate::invite_join::wizard_invite(
+            self.invite,
+            self.prefill.as_ref(),
+            picks.versions.chosen.as_deref(),
+            picks.loader.chosen,
+        );
+        let off_invite = self.invite.is_some()
+            && invite.is_none()
+            && picks.versions.chosen.is_some()
+            && picks.loader.chosen.is_some();
         let close_x = self.on_close.clone();
         let close_cancel = self.on_close.clone();
         let close_created = self.on_close.clone();
         let close_modpack = self.on_close.clone();
         let close_import = self.on_close.clone();
+        let close_code = self.on_close.clone();
 
         shell(Shell {
             rail: wizard_rail(wizard, &picks),
@@ -190,26 +255,44 @@ impl Component for CreateInstanceModal {
             body: steps::body(wizard, &picks),
             scrolls_itself: matches!(
                 picks.step,
-                Step::Version | Step::Import | Step::ImportReview
+                Step::Folder | Step::Version | Step::Import | Step::ImportReview
             ),
-            note: footer_note(&picks),
-            secondary_label: if first { "Cancel" } else { "Back" }.to_string(),
+            note: if off_invite {
+                t("oneclient.clusters.instance.create.invite_mismatch").to_string()
+            } else {
+                footer_note(&picks)
+            },
+            secondary_label: if first {
+                t("oneclient.common.cancel")
+            } else {
+                t("oneclient.common.back")
+            }
+            .to_string(),
             primary_label: match (modpack_step, origin) {
                 _ if review_step && picks.import_screening.is_none() => {
-                    "Import without checking".to_string()
+                    t("oneclient.clusters.instance.create.import_unchecked").to_string()
                 }
                 _ if (import_step && !improving) || review_step => match import_count {
-                    0 => "Import".to_string(),
-                    1 => "Import instance".to_string(),
-                    n => format!("Import {n} instances"),
+                    0 => t("oneclient.clusters.instance.create.import.none").to_string(),
+                    1 => t("oneclient.clusters.instance.create.import.one").to_string(),
+                    n => tf("oneclient.clusters.instance.create.import.other", &[&n]),
                 },
-                (false, _) if friend => "Choose file".to_string(),
-                (true, ModpackOrigin::Browse) => "Browse modpacks".to_string(),
-                (true, ModpackOrigin::File) => "Choose file".to_string(),
-                (false, _) if last => "Create instance".to_string(),
-                (false, _) => "Next".to_string(),
+                (false, _) if friend => {
+                    t("oneclient.clusters.instance.create.choose_file").to_string()
+                }
+                (false, _) if by_code => {
+                    t("oneclient.clusters.instance.create.open_share").to_string()
+                }
+                (true, ModpackOrigin::Browse) => {
+                    t("oneclient.clusters.instance.create.browse_modpacks").to_string()
+                }
+                (true, ModpackOrigin::File) => {
+                    t("oneclient.clusters.instance.create.choose_file").to_string()
+                }
+                (false, _) if last => t("oneclient.clusters.instance.create.create").to_string(),
+                (false, _) => t("oneclient.common.next").to_string(),
             },
-            primary_enabled: is_ready(&picks),
+            primary_enabled: is_ready(&picks) && !(last && off_invite),
             on_close: (move |()| close_x.call(())).into(),
             on_secondary: (move |()| {
                 if first {
@@ -222,6 +305,9 @@ impl Component for CreateInstanceModal {
             on_primary: (move |()| {
                 if friend {
                     pick_shared_file(dispatch.clone(), close_modpack.clone());
+                } else if by_code {
+                    dispatch.import_share(share_code.clone());
+                    close_code.call(());
                 } else if (import_step && !improving) || review_step {
                     dispatch.import_external_instances(import_jobs.clone());
                     close_import.call(());
@@ -234,7 +320,11 @@ impl Component for CreateInstanceModal {
                     );
                 } else if last {
                     if let Some(action) = action.clone() {
-                        mutation.mutate(action);
+                        if let Some(invite_id) = invite {
+                            dispatch.create_cluster_and_join(mutation, action, invite_id);
+                        } else {
+                            mutation.mutate(action);
+                        }
                         close_created.call(());
                     }
                 } else {
@@ -250,9 +340,9 @@ impl Component for CreateInstanceModal {
 fn pick_shared_file(dispatch: crate::Actions, on_close: EventHandler<()>) {
     spawn(async move {
         let Some(handle) = rfd::AsyncFileDialog::new()
-            .set_title("Choose the instance to import")
+            .set_title(t("oneclient.clusters.instance.create.dialog.import.title"))
             .add_filter(
-                "OneClient, Prism Launcher or MultiMC instance",
+                t("oneclient.clusters.instance.create.dialog.import.filter"),
                 &IMPORT_EXTENSIONS,
             )
             .pick_file()
@@ -292,8 +382,11 @@ fn start_modpack(
         ModpackOrigin::File => {
             spawn(async move {
                 let Some(handle) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a modpack")
-                    .add_filter("Modpack", &MODPACK_EXTENSIONS)
+                    .set_title(t("oneclient.clusters.instance.create.dialog.modpack.title"))
+                    .add_filter(
+                        t("oneclient.clusters.instance.create.dialog.modpack.filter"),
+                        &MODPACK_EXTENSIONS,
+                    )
                     .pick_file()
                     .await
                 else {

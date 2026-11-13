@@ -8,16 +8,31 @@ use oneclient_core::{ExternalDetection, ExternalInstance, FlaggedImportMod, Game
 
 use super::details::DetailsState;
 use crate::hooks::GameVersion;
+use crate::i18n::t;
 
-pub const VERSION_KINDS: [(&str, GameVersionKind); 4] = [
-    ("Releases", GameVersionKind::Release),
-    ("Snapshots", GameVersionKind::Snapshot),
-    ("Beta", GameVersionKind::Beta),
-    ("Alpha", GameVersionKind::Alpha),
-];
+pub fn version_kinds() -> [(&'static str, GameVersionKind); 4] {
+    [
+        (
+            t("oneclient.clusters.instance.model.kind.releases"),
+            GameVersionKind::Release,
+        ),
+        (
+            t("oneclient.clusters.instance.model.kind.snapshots"),
+            GameVersionKind::Snapshot,
+        ),
+        (
+            t("oneclient.clusters.instance.model.kind.beta"),
+            GameVersionKind::Beta,
+        ),
+        (
+            t("oneclient.clusters.instance.model.kind.alpha"),
+            GameVersionKind::Alpha,
+        ),
+    ]
+}
 
 pub fn kind_bit(kind: GameVersionKind) -> u8 {
-    let index = VERSION_KINDS
+    let index = version_kinds()
         .iter()
         .position(|(_, k)| *k == kind)
         .unwrap_or(0);
@@ -35,6 +50,7 @@ pub enum TypeChoice {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ImportSource {
     File,
+    Code,
     Launcher,
 }
 
@@ -90,10 +106,11 @@ pub enum ModpackOrigin {
     File,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum FolderChoice {
     Shared,
     Dedicated,
+    Custom(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +123,15 @@ pub enum LoaderChoice {
 
 impl LoaderChoice {
     pub const ALL: [Self; 4] = [Self::Fabric, Self::Forge, Self::NeoForge, Self::Vanilla];
+
+    pub fn of(loader: GameLoader) -> Self {
+        match loader {
+            GameLoader::Forge => Self::Forge,
+            GameLoader::NeoForge => Self::NeoForge,
+            GameLoader::Vanilla => Self::Vanilla,
+            GameLoader::Fabric | GameLoader::Quilt | GameLoader::Ornithe => Self::Fabric,
+        }
+    }
 
     pub fn primary(self) -> GameLoader {
         match self {
@@ -140,15 +166,21 @@ impl LoaderChoice {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::Fabric => {
-                "Light and quick to start. The widest package selection on modern versions, and the legacy build covers 1.8.9 and older."
-            }
-            Self::Forge => "The oldest loader. Most 1.12.2 and 1.8.9 packages need it.",
-            Self::NeoForge => "Forge's successor, for 1.20.2 and newer.",
-            Self::Vanilla => {
-                "Minecraft exactly as Mojang ships it. Packages cannot be installed without a loader."
-            }
+            Self::Fabric => t("oneclient.clusters.instance.model.loader.fabric"),
+            Self::Forge => t("oneclient.clusters.instance.model.loader.forge"),
+            Self::NeoForge => t("oneclient.clusters.instance.model.loader.neoforge"),
+            Self::Vanilla => t("oneclient.clusters.instance.model.loader.vanilla"),
         }
+    }
+
+    pub fn resolve_exact(
+        self,
+        available: &[GameLoader],
+        exact: Option<GameLoader>,
+    ) -> Option<GameLoader> {
+        exact
+            .filter(|loader| Self::of(*loader) == self && available.contains(loader))
+            .or_else(|| self.resolve(available))
     }
 
     pub fn resolve(self, available: &[GameLoader]) -> Option<GameLoader> {
@@ -188,17 +220,17 @@ pub enum Step {
 impl Step {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Type => "Type",
-            Self::Folder => "Folder",
-            Self::Loader => "Loader",
-            Self::Version => "Version",
-            Self::Bundles => "Bundles",
-            Self::Customize => "Details",
-            Self::Modpack => "Source",
-            Self::ImportSource => "Source",
-            Self::ImportMode => "Method",
-            Self::Import => "Instances",
-            Self::ImportReview => "Review",
+            Self::Type => t("oneclient.clusters.instance.model.step.type"),
+            Self::Folder => t("oneclient.clusters.instance.model.step.folder"),
+            Self::Loader => t("oneclient.clusters.instance.model.step.loader"),
+            Self::Version => t("oneclient.clusters.instance.model.step.version"),
+            Self::Bundles => t("oneclient.clusters.instance.model.step.bundles"),
+            Self::Customize => t("oneclient.clusters.instance.model.step.customize"),
+            Self::Modpack => t("oneclient.clusters.instance.model.step.source"),
+            Self::ImportSource => t("oneclient.clusters.instance.model.step.source"),
+            Self::ImportMode => t("oneclient.clusters.instance.model.step.import_mode"),
+            Self::Import => t("oneclient.clusters.instance.model.step.import"),
+            Self::ImportReview => t("oneclient.clusters.instance.model.step.import_review"),
         }
     }
 }
@@ -232,7 +264,7 @@ pub fn step_order(choice: TypeChoice, source: ImportSource, mode: ImportMode) ->
         (TypeChoice::OneClient, _, _) => &ONECLIENT_STEPS,
         (TypeChoice::Scratch, _, _) => &SCRATCH_STEPS,
         (TypeChoice::Modpack, _, _) => &MODPACK_STEPS,
-        (TypeChoice::Import, ImportSource::File, _) => &IMPORT_FILE_STEPS,
+        (TypeChoice::Import, ImportSource::File | ImportSource::Code, _) => &IMPORT_FILE_STEPS,
         (TypeChoice::Import, ImportSource::Launcher, ImportMode::AsIs) => &IMPORT_STEPS,
         (TypeChoice::Import, ImportSource::Launcher, ImportMode::Improve) => &IMPROVE_STEPS,
     }
@@ -285,6 +317,7 @@ impl VersionList {
 
 #[derive(Clone, Copy)]
 pub struct Wizard {
+    pub exact_loader: Option<GameLoader>,
     pub step: State<usize>,
     pub choice: State<TypeChoice>,
     pub version: State<Option<String>>,
@@ -295,6 +328,7 @@ pub struct Wizard {
     pub declined: State<Option<HashSet<String>>>,
     pub modpack_origin: State<ModpackOrigin>,
     pub import_source: State<ImportSource>,
+    pub share_code: State<String>,
     /// Instances ticked on the import step, in the order they were ticked
     pub import_chosen: State<Vec<ExternalInstance>>,
     /// Installs the user pointed at by hand (portable launchers)
@@ -303,4 +337,31 @@ pub struct Wizard {
     pub import_decisions: State<HashMap<DecisionKey, ModDecision>>,
     pub folder: State<FolderChoice>,
     pub details: DetailsState,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ornithe_invite_stays_ornithe_in_the_wizard() {
+        let choice = LoaderChoice::of(GameLoader::Ornithe);
+
+        assert_eq!(
+            choice.resolve(&[GameLoader::Forge, GameLoader::Ornithe]),
+            Some(GameLoader::Ornithe)
+        );
+        assert_eq!(
+            choice.resolve_exact(
+                &[GameLoader::Fabric, GameLoader::Ornithe],
+                Some(GameLoader::Ornithe),
+            ),
+            Some(GameLoader::Ornithe)
+        );
+        assert_eq!(
+            LoaderChoice::Forge
+                .resolve_exact(&[GameLoader::Forge], Some(GameLoader::Ornithe)),
+            Some(GameLoader::Forge)
+        );
+    }
 }

@@ -35,7 +35,8 @@ use freya::router::{RouterContext, use_route};
 use crate::Route;
 use crate::components::{Button, Icon, IconType};
 use crate::hooks::{has_migration_data, use_migration, use_onboarding_selection};
-use crate::theme::colors;
+use crate::i18n::t;
+use crate::theme::{colors, rounded, text_size};
 use crate::ui::{border_all_color, entrance_motion_layer};
 
 pub fn onboarding_total(has_migration: bool, picks_location: bool) -> usize {
@@ -93,7 +94,7 @@ pub(crate) fn onboarding_slide(content: impl IntoElement) -> impl IntoElement {
 
     use_side_effect_with_deps(&anim_finished, move |&finished| {
         if finished {
-            Platform::get().send(UserEvent::RequestRedraw);
+            Platform::get().current_window().request_redraw();
         }
     });
 
@@ -164,7 +165,7 @@ pub(crate) fn onboarding_nav(
     next: Route,
     next_enabled: bool,
 ) -> impl IntoElement {
-    onboarding_nav_action(back, "Next", next_enabled, move |()| {
+    onboarding_nav_action(back, t("oneclient.common.next"), next_enabled, move |()| {
         let _ = RouterContext::get().replace(next.clone());
     })
 }
@@ -191,7 +192,7 @@ pub(crate) fn onboarding_nav_action(
                 .on_press(move |_| {
                     let _ = RouterContext::get().replace(route.clone());
                 })
-                .text("Back")
+                .text(t("oneclient.common.back"))
                 .into_element()
         }))
         .child(
@@ -212,7 +213,14 @@ pub(crate) fn choice_row(
     active: bool,
     on_press: impl FnMut(()) + 'static,
 ) -> Element {
-    choice_row_sized(title, subtitle, active, Size::auto(), on_press)
+    choice_row_sized(
+        title,
+        subtitle,
+        active,
+        Size::auto(),
+        colors::fg_primary(),
+        on_press,
+    )
 }
 
 pub(crate) fn choice_row_sized(
@@ -220,11 +228,12 @@ pub(crate) fn choice_row_sized(
     subtitle: &str,
     active: bool,
     height: Size,
+    fg: Color,
     on_press: impl FnMut(()) + 'static,
 ) -> Element {
     let mut on_press = on_press;
     let border_color = if active {
-        colors::fg_primary()
+        fg
     } else {
         colors::component_border()
     };
@@ -237,7 +246,7 @@ pub(crate) fn choice_row_sized(
         .cross_align(Alignment::Center)
         .spacing(10.)
         .padding(Gaps::new_symmetric(8., 12.))
-        .corner_radius(CornerRadius::new_all(8.))
+        .corner_radius(rounded(8.))
         .border(border_all_color(1., border_color))
         .a11y_role(AccessibilityRole::Button)
         .cursor(CursorIcon::Pointer)
@@ -250,19 +259,19 @@ pub(crate) fn choice_row_sized(
                 .child(
                     label()
                         .text(title.to_string())
-                        .font_size(13.)
+                        .font_size(text_size(13.))
                         .font_weight(FontWeight::MEDIUM)
-                        .color(colors::fg_primary()),
+                        .color(fg),
                 )
                 .maybe_child((!subtitle.is_empty()).then(|| {
                     label()
                         .text(subtitle.to_string())
-                        .font_size(11.)
-                        .color(colors::fg_primary())
+                        .font_size(text_size(11.))
+                        .color(fg)
                         .into_element()
                 })),
         )
-        .maybe_child(active.then(|| Icon::new(IconType::Check).size(15.)))
+        .maybe_child(active.then(|| Icon::new(IconType::Check).size(15.).color(fg)))
         .into_element()
 }
 
@@ -291,7 +300,7 @@ pub(crate) fn version_chip(
         .height(Size::px(32.))
         .center()
         .padding(Gaps::new_symmetric(0., 14.))
-        .corner_radius(CornerRadius::new_all(999.))
+        .corner_radius(rounded(999.))
         .background(bg)
         .border(border_all_color(1.5, border))
         .a11y_role(AccessibilityRole::Button)
@@ -300,7 +309,7 @@ pub(crate) fn version_chip(
         .child(
             label()
                 .text(text.to_string())
-                .font_size(13.)
+                .font_size(text_size(13.))
                 .font_weight(FontWeight::MEDIUM)
                 .color(fg),
         )
@@ -315,14 +324,14 @@ pub(crate) fn step_heading(title: &str, subtitle: &str) -> impl IntoElement {
         .child(
             label()
                 .text(title.to_string())
-                .font_size(36.)
+                .font_size(text_size(36.))
                 .font_weight(FontWeight::BOLD)
                 .color(colors::fg_primary()),
         )
         .child(
             label()
                 .text(subtitle.to_string())
-                .font_size(16.)
+                .font_size(text_size(16.))
                 .color(colors::fg_secondary()),
         )
         .into_element()

@@ -10,12 +10,15 @@ use super::bundles::{
     BundleOverridesQuery, BundleUpdatesQuery, BundlesWithStatusQuery, ImportedModpacksQuery,
     ModpackSourcesQuery,
 };
-use super::cluster_content::{ClusterContentQuery, MigratableRoutesQuery, ShadowedModsQuery};
-use super::clusters::ListClustersQuery;
+use super::cluster_content::{
+    ClusterContentQuery, FolderPacksQuery, MigratableRoutesQuery, ShadowedModsQuery,
+};
+use super::clusters::{ListClustersQuery, SharedGroupsQuery};
 use super::package_updates::PackageUpdatesQuery;
 use super::settings_profiles::{
     ClusterProfileQuery, ClusterSettingsQuery, GameProfileQuery, ListNamedProfilesQuery,
 };
+use crate::i18n::{t, tf};
 
 async fn timed(step: &'static str, fut: impl std::future::Future<Output = ()>) {
     let started = std::time::Instant::now();
@@ -36,6 +39,11 @@ pub async fn invalidate_cluster_queries() {
     )
     .await;
     timed(
+        "folder_packs",
+        QueriesStorage::<FolderPacksQuery>::invalidate_all(),
+    )
+    .await;
+    timed(
         "shadowed_mods",
         QueriesStorage::<ShadowedModsQuery>::invalidate_all(),
     )
@@ -53,6 +61,11 @@ pub async fn invalidate_cluster_queries() {
     timed(
         "migratable_routes",
         QueriesStorage::<MigratableRoutesQuery>::invalidate_all(),
+    )
+    .await;
+    timed(
+        "shared_groups",
+        QueriesStorage::<SharedGroupsQuery>::invalidate_all(),
     )
     .await;
     timed(
@@ -91,6 +104,7 @@ pub async fn invalidate_cluster_queries() {
 /// Split out of [`invalidate_cluster_queries`] so an install can wait for just
 /// this before dropping its busy flag
 pub async fn invalidate_cluster_content_queries() {
+    crate::hooks::cloud_sync_signal(crate::hooks::CloudSignal::Changed(None));
     QueriesStorage::<ClusterContentQuery>::invalidate_all().await;
     QueriesStorage::<MigratableRoutesQuery>::invalidate_all().await;
 }
@@ -178,6 +192,16 @@ pub enum ClusterAction {
         cluster_id: ClusterId,
         hash: String,
     },
+    SetFolderPackEnabled {
+        cluster_id: ClusterId,
+        name: String,
+        enabled: bool,
+    },
+    RemoveFolderPack {
+        cluster_id: ClusterId,
+        name: String,
+        enabled: bool,
+    },
     DeleteBundledArtifact {
         cluster_id: ClusterId,
         hash: String,
@@ -191,9 +215,13 @@ pub enum ClusterAction {
         /// writes `Enabled` / `Disabled`
         manifest_default: bool,
     },
-    SetDedicatedDir {
+    SetDirTarget {
         cluster_id: ClusterId,
-        dedicated: bool,
+        target: oneclient_core::clusters::DirTarget,
+        create: bool,
+    },
+    DeleteSharedGroup {
+        name: String,
     },
     VerifyFiles {
         cluster_id: ClusterId,
@@ -208,7 +236,9 @@ pub enum ClusterAction {
         tags: Vec<String>,
         cover_source: Option<PathBuf>,
         bundles: Option<Vec<String>>,
+        require_bundles: bool,
         dedicated: bool,
+        shared_group: Option<String>,
     },
     UpdateInstance {
         cluster_id: ClusterId,
@@ -254,12 +284,27 @@ impl MutationCapability for ClusterMutation {
             if live == LiveSync::Deferred && state.games.is_active(cluster_id) {
                 services
                     .events
-                    .notify("Saved for the next launch")
-                    .body("Minecraft is running, but this could not be added to the open game.")
+                    .notify(t("oneclient.mutations.deferred.title"))
+                    .body(t("oneclient.mutations.deferred.body"))
                     .send();
             }
         };
         let result = match keys {
+            ClusterAction::SetArtifactEnabled { cluster_id, .. }
+            | ClusterAction::RemoveArtifact { cluster_id, .. }
+            | ClusterAction::RemoveBundlePackageFromDisk { cluster_id, .. }
+            | ClusterAction::DeleteBundledArtifact { cluster_id, .. }
+            | ClusterAction::SetBundlePackageEnabled { cluster_id, .. }
+            | ClusterAction::SetDirTarget { cluster_id, .. }
+            | ClusterAction::VerifyFiles { cluster_id }
+            | ClusterAction::DeleteInstance { cluster_id }
+            | ClusterAction::ResetInstance { cluster_id }
+                if crate::hooks::update_check_running(*cluster_id) =>
+            {
+                Err(oneclient_content::ContentError::InvalidData {
+                    reason: t("oneclient.mutations.blocked.update_check").to_string(),
+                })
+            }
             ClusterAction::SetArtifactEnabled {
                 cluster_id,
                 hash,
@@ -269,6 +314,26 @@ impl MutationCapability for ClusterMutation {
                 .map(|live| notify_deferred(live, *cluster_id)),
             ClusterAction::RemoveArtifact { cluster_id, hash } => {
                 oneclient_core::delete_artifact(*cluster_id, hash, content).await
+            }
+            ClusterAction::SetFolderPackEnabled {
+                cluster_id,
+                name,
+                enabled,
+            } => {
+                folder_pack_op(&state, *cluster_id, |dir| async move {
+                    oneclient_core::game::set_folder_pack_enabled(&dir, name, *enabled).await
+                })
+                .await
+            }
+            ClusterAction::RemoveFolderPack {
+                cluster_id,
+                name,
+                enabled,
+            } => {
+                folder_pack_op(&state, *cluster_id, |dir| async move {
+                    oneclient_core::game::remove_folder_pack(&dir, name, *enabled).await
+                })
+                .await
             }
             ClusterAction::RemoveBundlePackageFromDisk { cluster_id, hash } => {
                 oneclient_core::remove_artifact_from_cluster(*cluster_id, hash, false, content)
@@ -301,69 +366,113 @@ impl MutationCapability for ClusterMutation {
                 )
                 .await
             }
-            ClusterAction::SetDedicatedDir { cluster_id, .. }
+            ClusterAction::SetDirTarget { cluster_id, .. }
                 if state.games.is_syncing(*cluster_id) =>
             {
                 Err(oneclient_content::ContentError::InvalidData {
-                    reason: "Wait for the sync to finish before changing the folder.".to_string(),
+                    reason: t("oneclient.mutations.blocked.sync_before_folder").to_string(),
                 })
             }
-            ClusterAction::SetDedicatedDir {
+            ClusterAction::SetDirTarget {
                 cluster_id,
-                dedicated,
+                target,
+                create,
             } => {
                 // Switching moves the instance's files, which a reset is moving too
                 if oneclient_core::clusters::is_resetting(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the reset to finish before changing the directory."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.reset_before_folder").to_string(),
                     })
-                } else if oneclient_core::clusters::has_imported_modpacks(&state, *cluster_id).await {
+                } else if crate::hooks::modpack_job_running(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Remove the modpacks added to this instance under Added Modpacks before changing its folder."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.modpack_folder").to_string(),
+                    })
+                } else if oneclient_core::clusters::has_imported_modpacks(&state, *cluster_id).await
+                {
+                    Err(oneclient_content::ContentError::InvalidData {
+                        reason: t("oneclient.mutations.blocked.modpacks_before_folder").to_string(),
                     })
                 } else {
-                    let switching = state
+                    use oneclient_core::clusters::{ClusterError, DirTarget};
+                    let previous = state
                         .clusters
                         .get(*cluster_id)
                         .await
-                        .is_ok_and(|cluster| cluster.uses_dedicated_dir() != *dedicated);
-                    let mut result = state
-                        .clusters
-                        .set_dedicated_dir(
-                            *cluster_id,
-                            *dedicated,
-                            state.games.is_active(*cluster_id),
-                        )
-                        .await
-                        .map_err(|err| err.to_string());
+                        .ok()
+                        .map(|cluster| cluster.dir_target);
+                    let mut target = target.clone();
+                    let mut result = Ok(());
+                    if *create && state.games.is_active(*cluster_id) {
+                        result = Err(ClusterError::AlreadyRunning(*cluster_id).to_string());
+                    } else if let DirTarget::Shared(Some(name)) = &target {
+                        let resolved = if *create {
+                            state.clusters.create_shared_group(name).await.map(Some)
+                        } else {
+                            state.clusters.find_shared_group(name).await
+                        };
+                        match resolved {
+                            Ok(Some(group)) => target = DirTarget::Shared(Some(group)),
+                            Ok(None) => {
+                                result =
+                                    Err(ClusterError::SharedGroupMissing(name.clone()).to_string())
+                            }
+                            Err(err) => result = Err(err.to_string()),
+                        }
+                    }
+                    let switching = previous.as_ref().is_some_and(|from| *from != target);
+                    if result.is_ok() {
+                        result = state
+                            .clusters
+                            .set_dir_target(
+                                *cluster_id,
+                                &target,
+                                state.games.is_active(*cluster_id),
+                            )
+                            .await
+                            .map_err(|err| err.to_string());
+                    }
                     if result.is_ok()
                         && switching
                         && let Ok(cluster) = state.clusters.get(*cluster_id).await
                     {
-                        if !*dedicated {
-                            oneclient_core::game::join_shared_folder(&state.services, &cluster)
-                                .await;
-                        } else if let Ok(dir) = cluster.dir()
+                        if let Some(DirTarget::Shared(from)) = &previous
+                            && let Ok(dir) = cluster.dir()
                             && let Err(err) = oneclient_core::game::leave_shared_folder(
                                 &state.services,
                                 &cluster,
                                 &dir,
+                                from.as_deref(),
                             )
                             .await
                         {
-                            state
-                                .clusters
-                                .set_dedicated_dir(*cluster_id, false, false)
-                                .await
-                                .ok();
+                            if let Some(previous) = &previous {
+                                state
+                                    .clusters
+                                    .set_dir_target(*cluster_id, previous, false)
+                                    .await
+                                    .ok();
+                            }
                             result = Err(err.to_string());
+                        } else if matches!(target, DirTarget::Shared(_)) {
+                            oneclient_core::game::join_shared_folder(&state.services, &cluster)
+                                .await;
                         }
                     }
                     result.map_err(|reason| oneclient_content::ContentError::InvalidData { reason })
                 }
             }
+            ClusterAction::DeleteSharedGroup { .. } if state.games.any_syncing() => {
+                Err(oneclient_content::ContentError::InvalidData {
+                    reason: t("oneclient.mutations.blocked.sync_delete_folder").to_string(),
+                })
+            }
+            ClusterAction::DeleteSharedGroup { name } => state
+                .clusters
+                .delete_shared_group(name)
+                .await
+                .map_err(|err| oneclient_content::ContentError::InvalidData {
+                    reason: err.to_string(),
+                }),
             ClusterAction::VerifyFiles { cluster_id } => {
                 // Reports its own outcome not the generic failure toast a
                 // verify that finds nothing wrong is still a useful result
@@ -374,7 +483,9 @@ impl MutationCapability for ClusterMutation {
                 .await
                 {
                     Ok(report) => {
-                        let notify = services.events.notify("Verification complete");
+                        let notify = services
+                            .events
+                            .notify(t("oneclient.mutations.verification_complete"));
                         let notify = notify.body(report.summary());
                         if report.unrepairable.is_empty() {
                             notify.send();
@@ -398,7 +509,9 @@ impl MutationCapability for ClusterMutation {
                 tags,
                 cover_source,
                 bundles,
+                require_bundles,
                 dedicated,
+                shared_group,
             } => {
                 let global = state.settings.read().global_game_settings.clone();
                 let mut options = oneclient_core::clusters::CreateClusterOptions::new(
@@ -415,14 +528,39 @@ impl MutationCapability for ClusterMutation {
                 match state.clusters.create(&global, options).await {
                     Ok(cluster) => {
                         if *dedicated
-                            && let Err(err) =
-                                state.clusters.set_dedicated_dir(cluster.id, true, false).await
+                            && let Err(err) = state
+                                .clusters
+                                .set_dedicated_dir(cluster.id, true, false)
+                                .await
                         {
                             tracing::warn!(cluster_id = cluster.id, error = %err, "failed to give the new instance a dedicated directory");
                             services
                                 .events
-                                .notify("Couldn't give the instance its own folder")
-                                .body(format!("It uses the shared folder for now: {err}"))
+                                .notify(t("oneclient.mutations.dedicated_dir_failed.title"))
+                                .body(tf("oneclient.mutations.dedicated_dir_failed.body", &[&err]))
+                                .error()
+                                .send();
+                        }
+                        if let Some(group) = shared_group
+                            && let Err(err) = state
+                                .clusters
+                                .set_dir_target(
+                                    cluster.id,
+                                    &oneclient_core::clusters::DirTarget::Shared(Some(
+                                        group.clone(),
+                                    )),
+                                    false,
+                                )
+                                .await
+                        {
+                            tracing::warn!(cluster_id = cluster.id, error = %err, "failed to put the new instance in its shared folder");
+                            services
+                                .events
+                                .notify(tf(
+                                    "oneclient.mutations.shared_group_failed.title",
+                                    &[group],
+                                ))
+                                .body(tf("oneclient.mutations.shared_group_failed.body", &[&err]))
                                 .error()
                                 .send();
                         }
@@ -438,6 +576,7 @@ impl MutationCapability for ClusterMutation {
                             tracing::warn!(cluster_id = cluster.id, error = %err, "failed to store the instance cover");
                         }
 
+                        let mut bundle_failure = None;
                         if cluster.uses_bundles() {
                             if let Some(selected) = bundles {
                                 let archives = state
@@ -472,7 +611,7 @@ impl MutationCapability for ClusterMutation {
 
                             let session = oneclient_events::GroupedProgressSession::start(
                                 &services.events,
-                                format!("Setting up {}", cluster.name),
+                                tf("oneclient.mutations.setting_up", &[&cluster.name]),
                             );
                             if let Err(err) = oneclient_content::bundles::install_cluster_bundles(
                                 cluster.id,
@@ -483,6 +622,7 @@ impl MutationCapability for ClusterMutation {
                             .await
                             {
                                 tracing::warn!(cluster_id = cluster.id, error = %err, "failed to install bundle content for the new instance");
+                                bundle_failure = Some(err.to_string());
                             }
                             if let Err(err) = oneclient_core::apply_bundle_java_override(
                                 &state,
@@ -497,7 +637,24 @@ impl MutationCapability for ClusterMutation {
                             }
                             session.finish();
                         }
-                        Ok(())
+                        match bundle_failure.filter(|_| *require_bundles) {
+                            Some(reason) => {
+                                match state.clusters.delete(cluster.id, true).await {
+                                    Ok(_) => {
+                                        crate::hooks::forget_deleted_cluster(&state, cluster.id)
+                                            .await;
+                                        services
+                                            .events
+                                            .signal(oneclient_events::Signal::ClustersChanged);
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(cluster_id = cluster.id, error = %err, "failed to remove the instance whose bundles did not install");
+                                    }
+                                }
+                                Err(oneclient_content::ContentError::InvalidData { reason })
+                            }
+                            None => Ok(()),
+                        }
                     }
                     Err(err) => Err(oneclient_content::ContentError::InvalidData {
                         reason: err.to_string(),
@@ -554,17 +711,15 @@ impl MutationCapability for ClusterMutation {
             ClusterAction::DeleteInstance { cluster_id } => {
                 if crate::hooks::modpack_job_running(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the modpack to finish, or close its dialog, before deleting this instance."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.modpack_before_delete").to_string(),
                     })
                 } else if state.games.is_active(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Close the game before deleting this instance.".to_string(),
+                        reason: t("oneclient.mutations.blocked.game_before_delete").to_string(),
                     })
                 } else if state.games.is_syncing(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the sync to finish before deleting this instance."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.sync_before_delete").to_string(),
                     })
                 } else {
                     let (released, id) = (state.clone(), *cluster_id);
@@ -580,6 +735,7 @@ impl MutationCapability for ClusterMutation {
                             reason: err.to_string(),
                         });
                     if outcome.is_ok() {
+                        crate::hooks::forget_deleted_cluster(&state, *cluster_id).await;
                         services
                             .events
                             .signal(oneclient_events::Signal::ClustersChanged);
@@ -593,22 +749,19 @@ impl MutationCapability for ClusterMutation {
                 let claim = oneclient_core::clusters::ResetClaim::take(*cluster_id);
                 if crate::hooks::modpack_job_running(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the modpack to finish, or close its dialog, before resetting this instance."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.modpack_before_reset").to_string(),
                     })
                 } else if crate::hooks::exporting(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the export to finish before resetting this instance."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.export_before_reset").to_string(),
                     })
                 } else if state.games.is_active(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Close the game before resetting this instance.".to_string(),
+                        reason: t("oneclient.mutations.blocked.game_before_reset").to_string(),
                     })
                 } else if state.games.is_syncing(*cluster_id) {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "Wait for the sync from the shared folder to finish before resetting this instance."
-                            .to_string(),
+                        reason: t("oneclient.mutations.blocked.sync_before_reset").to_string(),
                     })
                 } else if let Some(claim) = claim {
                     let (state, cluster_id) = (state.clone(), *cluster_id);
@@ -621,14 +774,11 @@ impl MutationCapability for ClusterMutation {
                             .unwrap_or_default();
                         let session = oneclient_events::GroupedProgressSession::start(
                             &state.services.events,
-                            format!("Resetting {name}"),
+                            tf("oneclient.mutations.resetting", &[&name]),
                         );
-                        let result = oneclient_core::clusters::reset_cluster(
-                            &state,
-                            claim,
-                            Some(&session),
-                        )
-                        .await;
+                        let result =
+                            oneclient_core::clusters::reset_cluster(&state, claim, Some(&session))
+                                .await;
                         session.finish();
                         result
                     })
@@ -649,7 +799,7 @@ impl MutationCapability for ClusterMutation {
                     }
                 } else {
                     Err(oneclient_content::ContentError::InvalidData {
-                        reason: "This instance is already being reset.".to_string(),
+                        reason: t("oneclient.mutations.blocked.already_resetting").to_string(),
                     })
                 }
             }
@@ -671,7 +821,7 @@ impl MutationCapability for ClusterMutation {
             state
                 .services
                 .events
-                .notify("Action failed")
+                .notify(t("oneclient.mutations.action_failed"))
                 .body(err)
                 .error()
                 .send();
@@ -690,22 +840,45 @@ impl MutationCapability for ClusterMutation {
     }
 }
 
+async fn folder_pack_op<F, Fut>(
+    state: &oneclient_core::LauncherState,
+    cluster_id: ClusterId,
+    op: F,
+) -> Result<(), oneclient_content::ContentError>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<()>>,
+{
+    let invalid = |err: &dyn std::fmt::Display| oneclient_content::ContentError::InvalidData {
+        reason: err.to_string(),
+    };
+    let cluster = state
+        .clusters
+        .get(cluster_id)
+        .await
+        .map_err(|e| invalid(&e))?;
+    let dir = cluster.game_dir().map_err(|e| invalid(&e))?;
+    op(dir).await.map_err(|e| invalid(&e))
+}
+
 fn notify_reset(
     services: &oneclient_core::LauncherServices,
     report: &oneclient_core::clusters::ResetReport,
 ) {
     if let Some(err) = &report.reinstall_error {
-        let mut body = format!("Its content could not be installed again: {err}.");
+        let mut body = tf("oneclient.mutations.reset.reinstall_failed", &[&err]);
         if let Some(backup) = &report.backup_dir {
-            body.push_str(&format!(
-                " The files it replaced were moved to {}.",
-                backup.display()
+            body.push(' ');
+            body.push_str(&tf(
+                "oneclient.mutations.reset.moved_to",
+                &[&backup.display()],
             ));
         }
-        body.push_str(" Run Reset Instance again to finish. Until then it can't be launched.");
+        body.push(' ');
+        body.push_str(t("oneclient.mutations.reset.run_again"));
         services
             .events
-            .notify("Reset didn't finish")
+            .notify(t("oneclient.mutations.reset.unfinished"))
             .body(body)
             .error()
             .send();
@@ -713,24 +886,26 @@ fn notify_reset(
     }
 
     let mut body = if report.kept_shared_configs {
-        "Its mods and settings are back to how they were. Config files in the shared game folder were kept.".to_string()
+        t("oneclient.mutations.reset.done_kept_configs").to_string()
     } else {
-        "Its mods, settings and config files are back to how they were.".to_string()
+        t("oneclient.mutations.reset.done").to_string()
     };
     if let Some(backup) = &report.backup_dir {
-        body.push_str(&format!(
-            " The files it replaced were moved to {}.",
-            backup.display()
+        body.push(' ');
+        body.push_str(&tf(
+            "oneclient.mutations.reset.moved_to",
+            &[&backup.display()],
         ));
     }
 
-    let notify = services.events.notify("Instance reset");
+    let notify = services.events.notify(t("oneclient.mutations.reset.title"));
     if report.not_moved.is_empty() {
         notify.body(body).send();
     } else {
-        body.push_str(&format!(
-            " These could not be moved and were left in place: {}.",
-            report.not_moved.join(", ")
+        body.push(' ');
+        body.push_str(&tf(
+            "oneclient.mutations.reset.not_moved",
+            &[&report.not_moved.join(", ")],
         ));
         notify.body(body).error().send();
     }

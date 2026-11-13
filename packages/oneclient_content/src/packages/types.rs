@@ -19,6 +19,23 @@ pub struct SearchFilters {
     pub loaders: Option<Vec<GameLoader>>,
     pub categories: Option<Vec<String>>,
     pub sort: Option<SearchSort>,
+    pub side: Option<SearchSide>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SearchSide {
+    Client,
+    Server,
+}
+
+impl SearchSide {
+    pub fn modrinth_facets(self) -> Vec<String> {
+        let facet = match self {
+            Self::Client => "client_side:required",
+            Self::Server => "server_side:required",
+        };
+        vec![facet.to_string()]
+    }
 }
 
 impl SearchFilters {
@@ -113,6 +130,8 @@ pub struct ProjectMember {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GalleryImage {
     pub url: String,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
     pub title: Option<String>,
     #[serde(default)]
     pub featured: bool,
@@ -337,6 +356,8 @@ pub struct LinkedArtifactInfo {
     pub provider: Option<ProviderId>,
     /// Provider publish time RFC 3339
     pub published_at: Option<String>,
+    /// When the file was added to the cluster RFC 3339
+    pub added_at: Option<String>,
     /// Drives the new/updated badge in the package manager
     pub seen_status: SeenStatus,
 }
