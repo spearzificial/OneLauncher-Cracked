@@ -27,7 +27,7 @@ def main() -> None:
     exe = f"oneclient_app_{version}_x64-setup.exe"
     appimage = f"oneclient_app-{version}_x86_64.AppImage"
     deb = f"oneclient_app_{version}_amd64.deb"
-    rpm = f"oneclient_app-{version}-1.x86_64.rpm"
+    rpm = f"oneclient_app-{version}.x86_64.rpm"
     dmg_arm = f"OneLauncher-Cracked-{tag}-macos-arm64.dmg"
     dmg_x64 = f"OneLauncher-Cracked-{tag}-macos-x64.dmg"
     win_zip = f"OneLauncher-Cracked-{tag}-windows-x64.zip"

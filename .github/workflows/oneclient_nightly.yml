@@ -191,7 +191,13 @@ jobs:
           set -euo pipefail
           cp target/release/.cargo-packager/deb/*/data/usr/share/applications/oneclient_app.desktop \
              target/release/oneclient_app.desktop
-          cargo generate-rpm -p packages/oneclient_app
+          # RPM versions cannot contain '-', so 2.10.1-c2 becomes version 2.10.1, release c2
+          full="$(sed -n -E '/^\[workspace\.package\]/,/^\[/ s/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n1)"
+          if [[ "$full" == *-* ]]; then
+            cargo generate-rpm -p packages/oneclient_app -s "version = \"${full%%-*}\"" -s "release = \"${full#*-}\""
+          else
+            cargo generate-rpm -p packages/oneclient_app
+          fi
           cp target/generate-rpm/*.rpm "${{ steps.outdir.outputs.dir }}/"
 
       - name: (Windows) Smoke-test installer layout
