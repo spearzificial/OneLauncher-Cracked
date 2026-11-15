@@ -1,25 +1,25 @@
 use oneclient_app::updater::CrackedVersion;
 
 #[test]
-fn test_version_2_10_1_c2_upgrade_progression() {
-    let v2101_c1 = CrackedVersion::parse("2.10.1-c1").expect("parse 2.10.1-c1");
-    let v2101_c2 = CrackedVersion::parse("2.10.1-c2").expect("parse 2.10.1-c2");
+fn test_version_2_10_2_c1_upgrade_progression() {
+    let previous = CrackedVersion::parse("2.10.1-c2").expect("parse 2.10.1-c2");
+    let current = CrackedVersion::parse("2.10.2-c1").expect("parse 2.10.2-c1");
 
-    assert!(v2101_c2 > v2101_c1, "2.10.1-c2 must be greater than 2.10.1-c1");
+    assert!(current > previous, "2.10.2-c1 must be greater than 2.10.1-c2");
     assert_eq!(
-        v2101_c2,
+        current,
         CrackedVersion {
             major: 2,
             minor: 10,
-            patch: 1,
-            rev: 2,
+            patch: 2,
+            rev: 1,
         }
     );
 
-    // Assert that the workspace cargo package version is updated to 2.10.1-c2
+    // Assert that the workspace cargo package version is updated to 2.10.2-c1
     assert_eq!(
         env!("CARGO_PKG_VERSION"),
-        "2.10.1-c2",
-        "Cargo.toml must be 2.10.1-c2"
+        "2.10.2-c1",
+        "Cargo.toml must be 2.10.2-c1"
     );
 }

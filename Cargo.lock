@@ -3407,6 +3407,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6928282826c822ad91bf1c9a1cb90a30ba1c26770749929b4656cd6be829cd7c"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "iovec"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4683,7 +4692,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oneclient_app"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -4701,6 +4710,7 @@ dependencies = [
  "freya-winit",
  "futures-util",
  "image",
+ "inventory",
  "mimalloc",
  "notify",
  "oneclient_auth",
@@ -4740,7 +4750,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_auth"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4764,7 +4774,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_cluster"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "bytes 1.12.1",
  "chrono",
@@ -4788,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_common"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "directories",
  "interfrost",
@@ -4801,7 +4811,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_content"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "async-trait",
  "async_zip",
@@ -4829,7 +4839,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_core"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "async-compression",
  "async-stream",
@@ -4896,7 +4906,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_db"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "async-tempfile",
  "chrono",
@@ -4911,7 +4921,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_discord"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "chrono",
  "discord-rich-presence",
@@ -4923,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_events"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -4933,7 +4943,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_java"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "astral-tokio-tar",
  "async-tempfile",
@@ -4956,7 +4966,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_macro"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4965,7 +4975,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_mc"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -4987,7 +4997,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_net"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5009,7 +5019,7 @@ dependencies = [
 
 [[package]]
 name = "oneclient_polyplus"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "async-tungstenite 0.35.0",
  "bytes 1.12.1",
@@ -5408,7 +5418,7 @@ checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
 name = "polyio"
-version = "2.10.1-c2"
+version = "2.10.2-c1"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
