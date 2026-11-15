@@ -60,8 +60,10 @@ def main() -> None:
     )
 
     notes = upstream_changelog(version)
+    # Changelog lines end in "by [author](profile url)"; the release page lists changes only
+    credit = re.compile(r"\s+by \[[^\]]+\]\([^)]*\)\s*$")
     bullets = [
-        line.strip()
+        credit.sub("", line.strip())
         for line in notes.splitlines()
         if line.strip().startswith("- ")
     ]
