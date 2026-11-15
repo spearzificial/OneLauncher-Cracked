@@ -16,7 +16,7 @@ license = "GPL-3.0-only"
 readme = "README.md"
 repository = "https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked"
 rust-version = "1.97"
-version = "2.10.2"
+version = "2.10.1-c2"
 
 [workspace.dependencies]
 # core

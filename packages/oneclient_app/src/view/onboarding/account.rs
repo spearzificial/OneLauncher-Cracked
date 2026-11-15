@@ -1,8 +1,11 @@
 use freya::prelude::*;
+use freya::query::MutationStateData;
 use oneclient_auth::MinecraftAccount;
 
-use crate::components::{Avatar, Button, Icon, IconType, use_microsoft_login};
-use crate::hooks::{try_default_account, use_current_account};
+use crate::components::{Avatar, Button, Icon, IconType, TextInput, use_microsoft_login};
+use crate::hooks::{
+    AddOfflineAccountKeys, try_default_account, use_add_offline_account, use_current_account,
+};
 use crate::i18n::t;
 use crate::routes::Route;
 use crate::theme::{colors, text_size};
@@ -17,6 +20,13 @@ impl Component for OnboardingAccount {
     fn render(&self) -> impl IntoElement {
         let account_query = use_current_account();
         let msa = use_microsoft_login();
+        let add_offline = use_add_offline_account();
+        let username = use_state(String::new);
+
+        let offline_error = match &*add_offline.read().state() {
+            MutationStateData::Settled { res: Err(err), .. } => Some(err.to_string()),
+            _ => None,
+        };
 
         let account = try_default_account(&account_query);
         let has_account = account.is_some();
@@ -33,7 +43,18 @@ impl Component for OnboardingAccount {
                 Some(account) => account_preview(account).into_element(),
                 None => {
                     let start = msa.clone();
-                    sign_in_card(msa.pending, msa.error.clone(), move |_| start.start())
+                    rect()
+                        .vertical()
+                        .width(Size::fill())
+                        .spacing(24.)
+                        .child(sign_in_card(msa.pending, msa.error.clone(), move |_| {
+                            start.start()
+                        }))
+                        .child(offline_card(username, offline_error, move |_| {
+                            add_offline.mutate(AddOfflineAccountKeys {
+                                username: username.read().trim().to_string(),
+                            });
+                        }))
                         .into_element()
                 }
             })
@@ -132,6 +153,42 @@ fn sign_in_card(
                         .font_size(text_size(12.))
                         .color(colors::danger()),
                 )
+                .into_element()
+        }))
+        .into_element()
+}
+
+fn offline_card(
+    username: State<String>,
+    error: Option<String>,
+    on_add: impl FnMut(Event<PressEventData>) + 'static,
+) -> impl IntoElement {
+    rect()
+        .vertical()
+        .spacing(12.)
+        .cross_align(Alignment::Start)
+        .child(
+            rect()
+                .horizontal()
+                .spacing(8.)
+                .cross_align(Alignment::Center)
+                .child(TextInput::new(username).placeholder(t(
+                    "oneclient.settings.accounts.offline.username_placeholder",
+                )))
+                .child(
+                    Button::new()
+                        .secondary()
+                        .large()
+                        .on_press(on_add)
+                        .child(Icon::new(IconType::Plus).size(16.))
+                        .text(t("oneclient.settings.accounts.add_offline")),
+                ),
+        )
+        .maybe_child(error.map(|message| {
+            label()
+                .text(message)
+                .font_size(text_size(12.))
+                .color(colors::danger())
                 .into_element()
         }))
         .into_element()

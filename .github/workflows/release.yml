@@ -3,169 +3,311 @@ name: Release Multiplatform Binaries
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-c*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release Tag (e.g. v2.5.1)'
-        required: false
-        default: 'v2.5.1-c3'
+        description: 'Existing tag to build and publish (e.g. v2.10.1-c2)'
+        required: true
         type: string
 
-permissions:
-  contents: write
+concurrency:
+  group: cracked-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
-  SQLX_OFFLINE: true
+  SQLX_OFFLINE: 'true'
   SQLX_OFFLINE_DIR: packages/oneclient_db/.sqlx
+  # Same profile overrides as the nightly workflow: thin LTO links in a fraction of
+  # the time and the shipped binary is functionally identical.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            name: linux-x86_64
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            os_key: macos
+            arch: arm64
+            formats: app,dmg
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            os_key: macos
+            arch: x64
+            formats: app,dmg
+            macos_deployment_target: '10.14'
+          - platform: ubuntu-22.04
+            target: ''
+            os_key: linux
+            arch: x86_64
             formats: deb,appimage
-
-          # Windows x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: windows-x86_64
+          - platform: windows-latest
+            target: ''
+            os_key: windows
+            arch: x64
             formats: nsis
 
-          # macOS Apple Silicon
-          - os: macos-14
-            target: aarch64-apple-darwin
-            name: macos-arm64
-            formats: dmg,app
-
-          # macOS Intel (cross-compiled on macos-14)
-          - os: macos-14
-            target: x86_64-apple-darwin
-            name: macos-x86_64
-            formats: dmg,app
-
-    runs-on: ${{ matrix.os }}
-
+    runs-on: ${{ matrix.platform }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          targets: ${{ matrix.target }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-          cache-all-crates: true
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Check the tag matches Cargo.toml
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libgl1-mesa-dev \
-            libvulkan-dev \
-            libasound2-dev
-
-      - name: Install cargo-packager
-        run: cargo install cargo-packager --locked || true
-
-      - name: Build Release Binary
-        run: cargo build --release --bin oneclient_app --target ${{ matrix.target }}
-
-      - name: Package Application
-        run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }}
-        continue-on-error: true
-
-      - name: Generate RPM Package (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cargo install cargo-generate-rpm --locked || true
-          cargo generate-rpm --target ${{ matrix.target }} -p oneclient_app || true
-
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ matrix.name }}
-          if-no-files-found: warn
-          path: |
-            target/${{ matrix.target }}/release/*.deb
-            target/${{ matrix.target }}/release/*.AppImage
-            target/${{ matrix.target }}/release/*.dmg
-            target/${{ matrix.target }}/release/*-setup.exe
-            target/${{ matrix.target }}/generate-rpm/*.rpm
-            target/generate-rpm/*.rpm
-            target/release/*.deb
-            target/release/*.AppImage
-            target/release/*.dmg
-            target/release/*-setup.exe
-
-  create-release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-          merge-multiple: true
-
-      - name: Determine Release Tag
-        id: release_tag
-        run: |
-          if [[ "${{ github.ref_name }}" =~ ^v ]]; then
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          elif [ -n "${{ inputs.tag }}" ]; then
-            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=v2.5.1-c3" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          version="$(sed -n -E '/^\[workspace\.package\]/,/^\[/ s/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' Cargo.toml | head -n1)"
+          echo "Cargo.toml version: $version, tag: $TAG"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match workspace version $version"
+            exit 1
           fi
 
-      - name: Clean up previous release if exists
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete "${{ steps.release_tag.outputs.tag }}" -y --cleanup-tag=false || true
+      - name: (macOS) Pin deployment target
+        if: matrix.macos_deployment_target != ''
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          files: ./artifacts/**/*
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
-          body: |
-            ### What's New in ${{ steps.release_tag.outputs.tag }}
-            - **Complete Multiplayer Server Skin Support**: Native integration with client-side `OfflineSkins Reloaded` for Fabric 1.21.11, allowing skins to render directly on cracked multiplayer servers (e.g. `alwto.net`) when the server transmits empty player profiles.
-            - **Proper Isolated Offline Skin System (Authlib-Injector)**: Embedded, zero-network-dependency Authlib-Injector session provider with RSA signature verification. Your skin is attached strictly and exclusively to your player profile, completely eliminating the bug where other players or NPCs on offline servers would receive your skin.
-            - **Dynamic Version Compatibility**: Automatically gates offline skin mod integration strictly to matching versions, while Authlib-Injector handles clean, zero-dependency offline profile signing across all Minecraft versions.
-            - **Purged Incompatible Mods**: Completely cleaned and prevented CustomSkinLoader crashes on modern Fabric Loader (0.17+) and Sponge Mixin 0.8.7.
-            - **Vanilla & Multi-server Integrity**: Other offline players remain authentic vanilla Steve/Alex, while online players on hybrid servers display their legitimate Mojang skins via transparent caching session proxying.
-            - **Automatic Legacy Cleanup**: Restores pristine `client.jar` and removes stale skin resource packs from `options.txt` on launch.
-            - **Guaranteed Offline Game Launch**: Direct offline launching with 0 Microsoft accounts required.
-            - **In-Launcher 3D Skin Changer**: Full 3D skin preview, slim/classic arm model toggle, local file import, and online skin downloads.
-            - **Rebased on Upstream 2.5.1**: All upstream 2.5.1 features, hook error reporting, and metadata self-healing.
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          make_latest: true
-          fail_on_unmatched_files: false
+          target: ${{ matrix.target }}
+          save-cache: true
+          restore-cache: true
+          cache-namespace: nightly-cache
+
+      - name: (Linux) Install system dependencies
+        if: matrix.os_key == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang lld python3 \
+            libfontconfig-dev libfreetype-dev \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libdbus-1-dev \
+            libfuse2
+
+      - name: Install cargo-packager
+        uses: ./.github/actions/install-cargo-tool
+        with:
+          tool: cargo-packager
+          version: 0.11.8
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release --bin oneclient_app --target ${{ matrix.target }}
+          else
+            cargo build --release --bin oneclient_app
+          fi
+
+      - name: (macOS) Compile app icon catalog
+        if: matrix.os_key == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="packages/oneclient_app/icons/generated"
+          mkdir -p "$out"
+          xcrun actool packages/oneclient_app/icons/OneClient.icon \
+            --compile "$out" \
+            --app-icon OneClient \
+            --output-partial-info-plist "$out/partial.plist" \
+            --platform macosx \
+            --minimum-deployment-target 26.0 \
+            --errors --warnings --notices
+          rm -f "$out/OneClient.icns"
+          test -f "$out/Assets.car" || { echo "::error::actool produced no Assets.car"; exit 1; }
+
+      - name: (Windows) Stage app-local VC++ runtime
+        if: matrix.os_key == 'windows'
+        shell: bash
+        run: python3 distribution/windows/bundle-crt.py
+
+      - name: Package
+        shell: bash
+        env:
+          CI: 'true'
+        run: |
+          ARGS="--release --formats ${{ matrix.formats }}"
+          if [ -n "${{ matrix.target }}" ]; then
+            ARGS="$ARGS --target ${{ matrix.target }}"
+          fi
+          cargo packager $ARGS --verbose
+
+      - name: Resolve packager output dir
+        id: outdir
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            echo "dir=target/${{ matrix.target }}/release" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=target/release" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: (Linux) Install cargo-generate-rpm
+        if: matrix.os_key == 'linux'
+        uses: ./.github/actions/install-cargo-tool
+        with:
+          tool: cargo-generate-rpm
+          version: 0.21.0
+
+      - name: (Linux) Build RPM
+        if: matrix.os_key == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp target/release/.cargo-packager/deb/*/data/usr/share/applications/oneclient_app.desktop \
+             target/release/oneclient_app.desktop
+          cargo generate-rpm -p packages/oneclient_app
+          cp target/generate-rpm/*.rpm "${{ steps.outdir.outputs.dir }}/"
+
+      - name: Collect release assets
+        shell: bash
+        env:
+          OUT_DIR: ${{ steps.outdir.outputs.dir }}
+          OS_KEY: ${{ matrix.os_key }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          v="${TAG#v}"
+          mkdir -p dist
+          pick() { # pick <glob> <dest name>, exactly one match required
+            local files=($1)
+            if [ "${#files[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one file for '$1', found ${#files[@]}"
+              ls -la "$OUT_DIR"
+              exit 1
+            fi
+            cp "${files[0]}" "dist/$2"
+          }
+          case "$OS_KEY" in
+            linux)
+              pick "$OUT_DIR/*.deb" "oneclient_app_${v}_amd64.deb"
+              pick "$OUT_DIR/*.AppImage" "oneclient_app-${v}_x86_64.AppImage"
+              pick "$OUT_DIR/*.rpm" "oneclient_app-${v}-1.x86_64.rpm"
+              tar -czf "dist/OneLauncher-Cracked-${TAG}-linux-x86_64.tar.gz" -C "$OUT_DIR" oneclient_app
+              ;;
+            windows)
+              pick "$OUT_DIR/*-setup.exe" "oneclient_app_${v}_x64-setup.exe"
+              mkdir -p stage
+              cp "$OUT_DIR/oneclient_app.exe" stage/
+              cp target/crt/*.dll stage/
+              (cd stage && 7z a -tzip "../dist/OneLauncher-Cracked-${TAG}-windows-x64.zip" ./* > /dev/null)
+              ;;
+            macos)
+              pick "$OUT_DIR/*.dmg" "OneLauncher-Cracked-${TAG}-macos-${ARCH}.dmg"
+              apps=("$OUT_DIR"/*.app)
+              [ "${#apps[@]}" -eq 1 ] || { echo "::error::expected one .app bundle"; ls -la "$OUT_DIR"; exit 1; }
+              ditto -c -k --sequesterRsrc --keepParent "${apps[0]}" "dist/OneLauncher-Cracked-${TAG}-macos-${ARCH}.zip"
+              ;;
+          esac
+          ls -la dist
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.os_key }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      FORGEJO_URL: https://git.oiupoyt.space
+      FORGEJO_REPO: oiupoyt/OneLauncher-Cracked
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: assets
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Verify the full asset set is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          expected=(
+            "oneclient_app_${v}_x64-setup.exe"
+            "oneclient_app-${v}_x86_64.AppImage"
+            "oneclient_app_${v}_amd64.deb"
+            "oneclient_app-${v}-1.x86_64.rpm"
+            "OneLauncher-Cracked-${TAG}-macos-arm64.dmg"
+            "OneLauncher-Cracked-${TAG}-macos-x64.dmg"
+            "OneLauncher-Cracked-${TAG}-windows-x64.zip"
+            "OneLauncher-Cracked-${TAG}-linux-x86_64.tar.gz"
+            "OneLauncher-Cracked-${TAG}-macos-arm64.zip"
+            "OneLauncher-Cracked-${TAG}-macos-x64.zip"
+          )
+          ls -la assets
+          for f in "${expected[@]}"; do
+            [ -s "assets/$f" ] || { echo "::error::missing release asset: $f"; exit 1; }
+          done
+
+      - name: Render release notes
+        shell: bash
+        run: python3 .github/scripts/release_notes.py "$TAG" > notes.md
+
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
+          gh release create "$TAG" assets/* \
+            --verify-tag \
+            --title "OneLauncher-Cracked $TAG" \
+            --notes-file notes.md \
+            --latest
+
+      - name: Copy release to Forgejo
+        shell: bash
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FORGEJO_TOKEN:-}" ]; then
+            echo "::error::FORGEJO_TOKEN secret is not set; the GitHub release is published but the Forgejo copy was not made."
+            exit 1
+          fi
+          api="$FORGEJO_URL/api/v1/repos/$FORGEJO_REPO"
+          auth="Authorization: token $FORGEJO_TOKEN"
+
+          existing="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG" -o /dev/null -w '%{http_code}' || true)"
+          if [ "$existing" = "200" ]; then
+            id="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG" | jq -r .id)"
+            curl -fsS -X DELETE -H "$auth" "$api/releases/$id"
+          fi
+
+          sed "s#https://github.com/oiupoyt/OneLauncher-Cracked/releases/download/#$FORGEJO_URL/$FORGEJO_REPO/releases/download/#g" notes.md > notes-forgejo.md
+          release="$(jq -n --arg tag "$TAG" --arg name "OneLauncher-Cracked $TAG" --rawfile body notes-forgejo.md \
+            '{tag_name:$tag, target_commitish:"main", name:$name, body:$body, draft:false, prerelease:false}' \
+            | curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d @- "$api/releases")"
+          rid="$(echo "$release" | jq -r .id)"
+          for f in assets/*; do
+            echo "uploading $(basename "$f")"
+            curl -fsS --retry 3 -X POST -H "$auth" \
+              -F "attachment=@$f" \
+              "$api/releases/$rid/assets?name=$(basename "$f")" > /dev/null
+          done
+          echo "Forgejo release: $FORGEJO_URL/$FORGEJO_REPO/releases/tag/$TAG"

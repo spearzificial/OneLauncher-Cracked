@@ -1,9 +1,3 @@
-## 2.10.2 (2026-11-14)
-
-### Fixes
-
-- Revert README.md to original version with offline warning
-
 ## 2.10.1 (2026-11-11)
 
 ### Fixes
