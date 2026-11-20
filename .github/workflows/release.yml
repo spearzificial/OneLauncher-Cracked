@@ -303,7 +303,7 @@ jobs:
             curl -fsS -X DELETE -H "$auth" "$api/releases/$id"
           fi
 
-          sed "s#https://github.com/oiupoyt/OneLauncher-Cracked/releases/download/#$FORGEJO_URL/$FORGEJO_REPO/releases/download/#g" notes.md > notes-forgejo.md
+          sed "s#https://github.com/spearzificial/OneLauncher-Cracked/releases/download/#$FORGEJO_URL/$FORGEJO_REPO/releases/download/#g" notes.md > notes-forgejo.md
           release="$(jq -n --arg tag "$TAG" --arg name "OneLauncher-Cracked $TAG" --rawfile body notes-forgejo.md \
             '{tag_name:$tag, target_commitish:"main", name:$name, body:$body, draft:false, prerelease:false}' \
             | curl -fsS -X POST -H "$auth" -H 'Content-Type: application/json' -d @- "$api/releases")"

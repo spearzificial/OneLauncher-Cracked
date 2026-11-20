@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-GITHUB = "https://github.com/oiupoyt/OneLauncher-Cracked/releases/download"
+GITHUB = "https://github.com/spearzificial/OneLauncher-Cracked/releases/download"
 
 
 def upstream_changelog(version: str) -> str:

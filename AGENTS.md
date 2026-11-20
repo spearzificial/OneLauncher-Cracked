@@ -8,7 +8,7 @@
 
 ## 2. Remote Synchronization (Dual-Push)
 - Primary Forgejo remote: `https://git.oiupoyt.space/oiupoyt/OneLauncher-Cracked.git` (remote: `forgejo`)
-- GitHub remote: `https://github.com/oiupoyt/OneLauncher-Cracked.git` (remote: `origin`)
+- GitHub remote: `https://github.com/spearzificial/OneLauncher-Cracked.git` (remote: `origin`)
 - Always push to both remotes:
   ```bash
   git push origin <branch> --tags
