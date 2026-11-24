@@ -112,9 +112,6 @@ pub fn use_player_skin(uuid: String) -> (Bytes, bool) {
 
     let skin_query = super::use_cached_image(skin_url.clone(), 256);
 
-    let steve = AppAssets::get_bytes("steve.png").unwrap_or_default();
-    let alex = AppAssets::get_bytes("alex.png").unwrap_or_default();
-
     let default_slim = (java_string_hash(&uuid) & 1) == 1;
 
     if let Some((bytes, is_slim)) = custom_data
@@ -126,9 +123,19 @@ pub fn use_player_skin(uuid: String) -> (Bytes, bool) {
 
     match crate::hooks::loaded_image(skin_url.as_deref(), &skin_query) {
         Some((_, bytes)) => (bytes, is_slim),
-        None if default_slim => (alex, true),
-        None => (steve, false),
+        None if default_slim => (default_skin(true), true),
+        None => (default_skin(false), false),
     }
+}
+
+/// Bundled Steve/Alex skin. `Bytes` clones share one buffer, which keeps the
+/// pointer-keyed head cache in `Avatar` valid across renders.
+pub(crate) fn default_skin(slim: bool) -> Bytes {
+    static STEVE: std::sync::LazyLock<Bytes> =
+        std::sync::LazyLock::new(|| AppAssets::get_bytes("steve.png").unwrap_or_default());
+    static ALEX: std::sync::LazyLock<Bytes> =
+        std::sync::LazyLock::new(|| AppAssets::get_bytes("alex.png").unwrap_or_default());
+    if slim { ALEX.clone() } else { STEVE.clone() }
 }
 
 pub fn java_string_hash(s: &str) -> i32 {
@@ -249,4 +256,26 @@ async fn remove_custom_skin_loader(username: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod default_skin_tests {
+    use super::default_skin;
+
+    // The avatar caches its composed head by the skin buffer's address, so the
+    // bundled default skin has to come back as the same allocation every time.
+    // A fresh copy per render invalidated that cache and rendered in a loop.
+    #[test]
+    fn the_default_skin_is_one_shared_buffer() {
+        for slim in [false, true] {
+            let first = default_skin(slim);
+            let second = default_skin(slim);
+            assert!(!first.is_empty(), "the bundled default skin should load");
+            assert_eq!(
+                first.as_ptr(),
+                second.as_ptr(),
+                "default skin must not be reallocated per call (slim={slim})"
+            );
+        }
+    }
 }
